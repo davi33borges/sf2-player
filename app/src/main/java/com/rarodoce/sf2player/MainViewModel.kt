@@ -131,7 +131,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
             TargetType.SLOT_REVERB -> if (isOn && s != null) update(t.slot) { it.copy(reverb = v) }
             TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)
-            TargetType.REVERB_LEVEL -> if (isOn) setReverb(reverb.copy(level = v))
+            TargetType.REVERB_LEVEL -> if (isOn) changeReverb(reverb.copy(level = v))
             // botões: só reage ao apertar (valor > 0)
             TargetType.SLOT_TOGGLE -> if (isOn && value > 0 && s != null) update(t.slot) { it.copy(enabled = !it.enabled) }
             TargetType.SLOT_PRESET_NEXT -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset + 1) % s.presets.size)
@@ -210,7 +210,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun panic() = Engine.nativePanic()
 
-    fun setReverb(r: ReverbState) {
+    fun changeReverb(r: ReverbState) {
         reverb = r
         Engine.nativeSetReverb(r.size, r.tone, r.level)
         scheduleSave()
@@ -320,7 +320,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         Engine.nativePanic()
         for (i in 0 until SLOT_COUNT) loadSlotState(i, scene.slots.getOrElse(i) { SlotState() })
         setMasterVolume(scene.master)
-        setReverb(scene.reverb)
+        changeReverb(scene.reverb)
         mappings.clear(); mappings.addAll(scene.mappings); saveMappings()
         currentScene = scene.name; prefs.edit().putString("currentScene", scene.name).apply()
         toast = "Preset \"${scene.name}\" carregado"

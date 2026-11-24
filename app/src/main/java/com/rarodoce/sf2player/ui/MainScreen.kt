@@ -317,7 +317,7 @@ private fun MasterStrip(vm: MainViewModel, modifier: Modifier, onMaster: () -> U
                 Spacer(Modifier.width(3.dp))
                 Icon(Icons.Rounded.Tune, "Reverb", tint = Ink.copy(alpha = 0.7f), modifier = Modifier.size(12.dp))
             }
-            Knob(vm.reverb.level, { v -> vm.setReverb(vm.reverb.copy(level = v)) }, Color(0xFF8FB8FF), size = 30.dp, default = 0.35f)
+            Knob(vm.reverb.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) }, Color(0xFF8FB8FF), size = 30.dp, default = 0.35f)
             Text("REV ${(vm.reverb.level * 100).roundToInt()}%", color = InkDim, fontSize = 9.sp, fontFamily = Mono)
         }
         VerticalFader(
@@ -610,11 +610,11 @@ private fun ReverbDialog(vm: MainViewModel, onClose: () -> Unit) {
         text = {
             Column {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.setReverb(vm.reverb.copy(size = v)) },
+                    KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.changeReverb(vm.reverb.copy(size = v)) },
                         c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
                     KnobCell(vm, "Tom", if (r.tone < 0.35f) "Escuro" else if (r.tone > 0.7f) "Brilhante" else "Médio", r.tone,
-                        { v -> vm.setReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
-                    KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.setReverb(vm.reverb.copy(level = v)) },
+                        { v -> vm.changeReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
+                    KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) },
                         c, Target(TargetType.REVERB_LEVEL), default = 0.35f)
                 }
                 Text("Quanto cada instrumento manda para o reverb é ajustado no knob Reverb de cada canal.",
