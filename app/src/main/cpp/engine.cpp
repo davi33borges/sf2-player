@@ -1,5 +1,6 @@
-// Motor de áudio do SF2 Player: até 8 instrumentos SoundFont tocando em camadas/split.
-// TinySoundFont faz a síntese, Oboe entrega o áudio com baixa latência.
+// Motor de áudio do SF2 Player: até 8 instrumentos SoundFont, como canais de uma mesa de som.
+// Cadeia de cada canal: SF2 (TinySoundFont) -> cutoff -> EQ 3 bandas -> compressor -> fader -> mix.
+// Oboe entrega o áudio com baixa latência.
 
 #define TSF_IMPLEMENTATION
 #include "tsf.h"
@@ -7,9 +8,10 @@
 #include <jni.h>
 #include <oboe/Oboe.h>
 #include <android/log.h>
+#include <atomic>
+#include <cmath>
 #include <mutex>
 #include <vector>
-#include <string>
 #include <cstring>
 #include <algorithm>
 #include <memory>
@@ -20,19 +22,109 @@
 
 static constexpr int kSlots = 8;
 static constexpr int kMaxVoices = 96;
+static constexpr int kChunk = 1024;   // quadros processados por vez
+static constexpr float kPi = 3.14159265358979f;
+
+// ------------------------------------------------------------------ filtros
+
+/** Biquad estéreo (fórmulas RBJ), forma direta transposta II. */
+struct Biquad {
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    float z1[2] = {0, 0}, z2[2] = {0, 0};
+    bool active = false;
+
+    void set(float nb0, float nb1, float nb2, float a0, float na1, float na2) {
+        b0 = nb0 / a0; b1 = nb1 / a0; b2 = nb2 / a0; a1 = na1 / a0; a2 = na2 / a0;
+    }
+    void lowShelf(float sr, float f, float db) {
+        active = std::fabs(db) > 0.05f; if (!active) return;
+        float A = std::pow(10.f, db / 40.f), w = 2 * kPi * f / sr, c = std::cos(w), s = std::sin(w);
+        float al = s / 2 * std::sqrt(2.f), sa = 2 * std::sqrt(A) * al;
+        set(A * ((A + 1) - (A - 1) * c + sa), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sa),
+            (A + 1) + (A - 1) * c + sa, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sa);
+    }
+    void highShelf(float sr, float f, float db) {
+        active = std::fabs(db) > 0.05f; if (!active) return;
+        float A = std::pow(10.f, db / 40.f), w = 2 * kPi * f / sr, c = std::cos(w), s = std::sin(w);
+        float al = s / 2 * std::sqrt(2.f), sa = 2 * std::sqrt(A) * al;
+        set(A * ((A + 1) + (A - 1) * c + sa), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sa),
+            (A + 1) - (A - 1) * c + sa, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sa);
+    }
+    void peak(float sr, float f, float q, float db) {
+        active = std::fabs(db) > 0.05f; if (!active) return;
+        float A = std::pow(10.f, db / 40.f), w = 2 * kPi * f / sr, c = std::cos(w), al = std::sin(w) / (2 * q);
+        set(1 + al * A, -2 * c, 1 - al * A, 1 + al / A, -2 * c, 1 - al / A);
+    }
+    void lowPass(float sr, float f, float q) {
+        active = f < sr * 0.45f && f < 19500.f; if (!active) return;
+        float w = 2 * kPi * f / sr, c = std::cos(w), al = std::sin(w) / (2 * q);
+        set((1 - c) / 2, 1 - c, (1 - c) / 2, 1 + al, -2 * c, 1 - al);
+    }
+    void process(float* buf, int frames) {
+        if (!active) return;
+        for (int i = 0; i < frames; ++i) {
+            for (int ch = 0; ch < 2; ++ch) {
+                float x = buf[i * 2 + ch];
+                float y = b0 * x + z1[ch];
+                z1[ch] = b1 * x - a1 * y + z2[ch];
+                z2[ch] = b2 * x - a2 * y;
+                buf[i * 2 + ch] = y;
+            }
+        }
+    }
+    void reset() { z1[0] = z1[1] = z2[0] = z2[1] = 0; }
+};
+
+/** Compressor de um botão só: quanto mais "amount", menor o limiar e maior a razão. */
+struct Compressor {
+    float amount = 0, thresholdDb = 0, ratio = 1, makeup = 1, env = 0, attack = 0, release = 0;
+    void set(float sr, float a) {
+        amount = a;
+        thresholdDb = -a * 30.f;
+        ratio = 1.f + a * 7.f;
+        makeup = std::pow(10.f, (-thresholdDb * (1.f - 1.f / ratio) * 0.55f) / 20.f);
+        attack = std::exp(-1.f / (0.004f * sr));
+        release = std::exp(-1.f / (0.15f * sr));
+    }
+    void process(float* buf, int frames) {
+        if (amount < 0.01f) return;
+        for (int i = 0; i < frames; ++i) {
+            float l = buf[i * 2], r = buf[i * 2 + 1];
+            float lvl = std::max(std::fabs(l), std::fabs(r));
+            env = lvl > env ? attack * env + (1 - attack) * lvl : release * env + (1 - release) * lvl;
+            float g = makeup;
+            if (env > 1e-6f) {
+                float db = 20.f * std::log10(env);
+                if (db > thresholdDb) g *= std::pow(10.f, ((thresholdDb - db) * (1.f - 1.f / ratio)) / 20.f);
+            }
+            buf[i * 2] = l * g; buf[i * 2 + 1] = r * g;
+        }
+    }
+};
+
+// ------------------------------------------------------------------ canais
 
 struct Slot {
     tsf* font = nullptr;
     bool enabled = true;
-    float volume = 0.8f;   // 0..1
-    float pan = 0.5f;      // 0 = esquerda, 0.5 = centro, 1 = direita
-    int transpose = 0;     // semitons
-    int lowKey = 0;
-    int highKey = 127;
-    int midiChannel = -1;  // -1 = todos os canais
-    int preset = 0;
-    int8_t active[128];    // nota tocada (já transposta) para cada tecla física, -1 = nenhuma
+    float gain = 1.f, curGain = 1.f;   // ganho do fader (curGain suaviza a mudança)
+    float pan = 0.5f;
+    int transpose = 0, lowKey = 0, highKey = 127, midiChannel = -1, preset = 0;
+    float releaseMul = 1.f;    // multiplica o release do SF2
+    float velSens = 1.f;       // 0 = velocity fixa, 1 = resposta total
+    float eqLow = 0, eqMid = 0, eqHigh = 0, cutoff = 20000.f, comp = 0;
+    Biquad lp, low, mid, high;
+    Compressor compressor;
+    int8_t active[128];
     Slot() { std::memset(active, -1, sizeof(active)); }
+
+    void updateDsp(float sr) {
+        lp.lowPass(sr, cutoff, 0.85f);
+        low.lowShelf(sr, 120.f, eqLow);
+        mid.peak(sr, 1000.f, 0.8f, eqMid);
+        high.highShelf(sr, 6000.f, eqHigh);
+        compressor.set(sr, comp);
+    }
 };
 
 enum EvType : uint8_t { EV_NOTE_ON, EV_NOTE_OFF, EV_CC, EV_PITCH, EV_PANIC };
@@ -42,13 +134,17 @@ class Engine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErr
 public:
     std::mutex lock;
     Slot slots[kSlots];
-    std::vector<Event> pending;      // eventos aguardando o próximo bloco de áudio
-    std::vector<Event> processing;
+    std::vector<Event> pending, processing;
+    std::vector<float> tmp;
     float master = 0.9f;
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
+    std::atomic<float> peaks[kSlots + 1];
 
-    Engine() { pending.reserve(1024); processing.reserve(1024); }
+    Engine() {
+        pending.reserve(1024); processing.reserve(1024); tmp.resize(kChunk * 2);
+        for (auto& p : peaks) p.store(0.f);
+    }
 
     bool start() {
         oboe::AudioStreamBuilder b;
@@ -62,23 +158,22 @@ public:
          ->setErrorCallback(this);
         oboe::Result r = b.openStream(stream);
         if (r != oboe::Result::OK) { LOGE("openStream: %s", oboe::convertToText(r)); return false; }
-        // buffer de 2 bursts: menor atraso possível sem estalos
         stream->setBufferSizeInFrames(stream->getFramesPerBurst() * 2);
         {
             std::lock_guard<std::mutex> g(lock);
             sampleRate = stream->getSampleRate();
-            for (auto& s : slots) if (s.font) tsf_set_output(s.font, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
+            for (auto& s : slots) {
+                if (s.font) tsf_set_output(s.font, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
+                s.updateDsp((float)sampleRate);
+            }
         }
         r = stream->requestStart();
         LOGI("stream: %d Hz, burst %d, %s", sampleRate, stream->getFramesPerBurst(), oboe::convertToText(r));
         return r == oboe::Result::OK;
     }
 
-    void stop() {
-        if (stream) { stream->stop(); stream->close(); stream.reset(); }
-    }
+    void stop() { if (stream) { stream->stop(); stream->close(); stream.reset(); } }
 
-    // Fone desconectado, troca de saída etc.: reabre o stream
     void onErrorAfterClose(oboe::AudioStream*, oboe::Result err) override {
         LOGI("stream fechado (%s), reabrindo", oboe::convertToText(err));
         stream.reset();
@@ -90,20 +185,35 @@ public:
         if (pending.size() < 4096) pending.push_back(e);
     }
 
-    // ---- processamento de eventos (chamado só dentro do callback de áudio, com lock) ----
     static bool chMatch(const Slot& s, int ch) { return s.midiChannel < 0 || s.midiChannel == ch; }
+
+    /** Aplica o multiplicador de release nas vozes que acabaram de nascer. */
+    static void scaleRelease(tsf* f, float mul) {
+        if (std::fabs(mul - 1.f) < 0.01f) return;
+        unsigned int idx = f->voicePlayIndex - 1;
+        for (int i = 0; i < f->voiceNum; ++i) {
+            tsf_voice& v = f->voices[i];
+            if (v.playingPreset == -1 || v.playIndex != idx) continue;
+            float r = std::max(v.ampenv.parameters.release, 0.006f);
+            v.ampenv.parameters.release = std::min(r * mul, 20.f);
+            float m = std::max(v.modenv.parameters.release, 0.006f);
+            v.modenv.parameters.release = std::min(m * mul, 20.f);
+        }
+    }
 
     void handle(const Event& e) {
         switch (e.type) {
         case EV_NOTE_ON: {
-            float vel = e.b / 127.0f;
+            float raw = e.b / 127.0f;
             for (auto& s : slots) {
                 if (!s.font || !s.enabled || !chMatch(s, e.ch)) continue;
                 if (e.a < s.lowKey || e.a > s.highKey) continue;
                 int k = e.a + s.transpose;
                 if (k < 0 || k > 127) continue;
                 if (s.active[e.a] >= 0) tsf_channel_note_off(s.font, 0, s.active[e.a]);
-                tsf_channel_note_on(s.font, 0, k, vel);
+                float vel = 1.f - s.velSens * (1.f - raw);   // sensibilidade de velocity
+                tsf_channel_note_on(s.font, 0, k, std::max(vel, 0.01f));
+                scaleRelease(s.font, s.releaseMul);
                 s.active[e.a] = (int8_t)k;
             }
             break;
@@ -116,8 +226,7 @@ public:
             }
             break;
         case EV_CC:
-            // volume (7) e pan (10) do teclado não mexem nos slots: esses são controlados pelo app
-            if (e.a == 7 || e.a == 10) break;
+            if (e.a == 7 || e.a == 10) break;   // volume e pan ficam com a mesa do app
             for (auto& s : slots)
                 if (s.font && chMatch(s, e.ch)) tsf_channel_midi_control(s.font, 0, e.a, e.b);
             break;
@@ -134,10 +243,17 @@ public:
         }
     }
 
+    static void peakOf(const float* b, int n, float& p) {
+        for (int i = 0; i < n; ++i) { float a = std::fabs(b[i]); if (a > p) p = a; }
+    }
+    void storePeak(int i, float p) {
+        float old = peaks[i].load(std::memory_order_relaxed);
+        if (p > old) peaks[i].store(p, std::memory_order_relaxed);
+    }
+
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream*, void* data, int32_t frames) override {
         float* out = static_cast<float*>(data);
         std::memset(out, 0, sizeof(float) * frames * 2);
-        // nunca bloquear a thread de áudio: se a UI estiver segurando o lock, este bloco sai em silêncio
         std::unique_lock<std::mutex> g(lock, std::try_to_lock);
         if (!g.owns_lock()) return oboe::DataCallbackResult::Continue;
 
@@ -145,23 +261,52 @@ public:
         for (const auto& e : processing) handle(e);
         processing.clear();
 
-        for (auto& s : slots)
-            if (s.font) tsf_render_float(s.font, out, frames, 1);
+        float slotPeak[kSlots] = {0};
+        for (int done = 0; done < frames; done += kChunk) {
+            int n = std::min(kChunk, frames - done);
+            float* dst = out + done * 2;
+            for (int si = 0; si < kSlots; ++si) {
+                Slot& s = slots[si];
+                if (!s.font) continue;
+                float* t = tmp.data();
+                std::memset(t, 0, sizeof(float) * n * 2);
+                tsf_render_float(s.font, t, n, 0);
+                s.lp.process(t, n);
+                s.low.process(t, n);
+                s.mid.process(t, n);
+                s.high.process(t, n);
+                s.compressor.process(t, n);
+                // fader com rampa (sem estalos ao mexer rápido)
+                float g0 = s.curGain, g1 = s.gain, step = (g1 - g0) / n;
+                for (int i = 0; i < n; ++i) {
+                    float gg = g0 + step * i;
+                    t[i * 2] *= gg; t[i * 2 + 1] *= gg;
+                    dst[i * 2] += t[i * 2]; dst[i * 2 + 1] += t[i * 2 + 1];
+                }
+                s.curGain = g1;
+                peakOf(t, n * 2, slotPeak[si]);
+            }
+        }
+        for (int si = 0; si < kSlots; ++si) storePeak(si, slotPeak[si]);
 
         const float m = master;
+        float mp = 0;
         for (int i = 0; i < frames * 2; ++i) {
             float v = out[i] * m;
-            // limitador suave para não distorcer quando várias camadas somam
-            if (v > 1.0f) v = 1.0f; else if (v < -1.0f) v = -1.0f;
+            float a = std::fabs(v);
+            if (a > mp) mp = a;
+            // saturação suave acima de 0,8 para não clipar seco
+            if (a > 0.8f) v = (v > 0 ? 1.f : -1.f) * (0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f));
             out[i] = v;
         }
+        storePeak(kSlots, mp);
         return oboe::DataCallbackResult::Continue;
     }
 
     void applySlot(Slot& s) {
         if (!s.font) return;
         tsf_channel_set_presetindex(s.font, 0, s.preset);
-        tsf_channel_set_volume(s.font, 0, s.volume);
+        tsf_channel_set_volume(s.font, 0, 1.0f);
         tsf_channel_set_pan(s.font, 0, s.pan);
     }
 };
@@ -186,20 +331,19 @@ Java_com_rarodoce_sf2player_Engine_nativeStop(JNIEnv*, jobject) {
     if (gEngine) gEngine->stop();
 }
 
-// Carrega um .sf2 no slot. Retorna os nomes dos presets, ou null se o arquivo for inválido.
 JNIEXPORT jobjectArray JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeLoad(JNIEnv* env, jobject, jint idx, jstring jpath, jint preset) {
     if (!slotAt(idx)) return nullptr;
     const char* path = env->GetStringUTFChars(jpath, nullptr);
-    tsf* f = tsf_load_filename(path);   // pode demorar: fora do lock
+    tsf* f = tsf_load_filename(path);
     env->ReleaseStringUTFChars(jpath, path);
     if (!f) return nullptr;
 
     tsf_set_output(f, TSF_STEREO_INTERLEAVED, gEngine->sampleRate, 0.0f);
-    tsf_set_max_voices(f, kMaxVoices);   // pré-aloca vozes: sem malloc na thread de áudio
+    tsf_set_max_voices(f, kMaxVoices);
     int count = tsf_get_presetcount(f);
     if (preset < 0 || preset >= count) preset = 0;
-    tsf_channel_set_presetindex(f, 0, preset);  // aloca o canal 0 aqui, fora do áudio
+    tsf_channel_set_presetindex(f, 0, preset);
     tsf_channel_set_pitchrange(f, 0, 2.0f);
 
     jobjectArray names = env->NewObjectArray(count, env->FindClass("java/lang/String"), nullptr);
@@ -216,6 +360,7 @@ Java_com_rarodoce_sf2player_Engine_nativeLoad(JNIEnv* env, jobject, jint idx, js
         s.font = f;
         s.preset = preset;
         std::memset(s.active, -1, sizeof(s.active));
+        s.lp.reset(); s.low.reset(); s.mid.reset(); s.high.reset();
         gEngine->applySlot(s);
     }
     if (old) tsf_close(old);
@@ -234,20 +379,32 @@ Java_com_rarodoce_sf2player_Engine_nativeUnload(JNIEnv*, jobject, jint idx) {
     if (old) tsf_close(old);
 }
 
+// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor]
 JNIEXPORT void JNICALL
-Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv*, jobject, jint idx, jboolean enabled,
-        jfloat volume, jfloat pan, jint transpose, jint lowKey, jint highKey, jint channel, jint preset) {
+Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx, jboolean enabled, jint preset,
+        jint transpose, jint lowKey, jint highKey, jint channel, jfloatArray jp) {
     Slot* s = slotAt(idx);
-    if (!s) return;
+    if (!s || env->GetArrayLength(jp) < 9) return;
+    float p[9];
+    env->GetFloatArrayRegion(jp, 0, 9, p);
+
     std::lock_guard<std::mutex> g(gEngine->lock);
     bool wasEnabled = s->enabled;
     s->enabled = enabled;
-    s->volume = std::clamp((float)volume, 0.0f, 1.0f);
-    s->pan = std::clamp((float)pan, 0.0f, 1.0f);
+    s->gain = std::clamp(p[0], 0.f, 4.f);
+    s->pan = std::clamp(p[1], 0.f, 1.f);
+    s->releaseMul = std::clamp(p[2], 0.05f, 16.f);
+    s->velSens = std::clamp(p[3], 0.f, 1.f);
+    s->eqLow = std::clamp(p[4], -15.f, 15.f);
+    s->eqMid = std::clamp(p[5], -15.f, 15.f);
+    s->eqHigh = std::clamp(p[6], -15.f, 15.f);
+    s->cutoff = std::clamp(p[7], 40.f, 20000.f);
+    s->comp = std::clamp(p[8], 0.f, 1.f);
     s->transpose = std::clamp((int)transpose, -48, 48);
     s->lowKey = std::clamp((int)lowKey, 0, 127);
     s->highKey = std::clamp((int)highKey, 0, 127);
     s->midiChannel = std::clamp((int)channel, -1, 15);
+    s->updateDsp((float)gEngine->sampleRate);
     if (s->font) {
         if (wasEnabled && !enabled) {
             tsf_channel_note_off_all(s->font, 0);
@@ -266,7 +423,16 @@ JNIEXPORT void JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeSetMaster(JNIEnv*, jobject, jfloat v) {
     if (!gEngine) return;
     std::lock_guard<std::mutex> g(gEngine->lock);
-    gEngine->master = std::clamp((float)v, 0.0f, 1.5f);
+    gEngine->master = std::clamp((float)v, 0.0f, 4.f);
+}
+
+/** Lê e zera os picos: 8 canais + master. */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeReadMeters(JNIEnv* env, jobject, jfloatArray out) {
+    if (!gEngine) return;
+    float v[kSlots + 1];
+    for (int i = 0; i <= kSlots; ++i) v[i] = gEngine->peaks[i].exchange(0.f, std::memory_order_relaxed);
+    env->SetFloatArrayRegion(out, 0, kSlots + 1, v);
 }
 
 JNIEXPORT void JNICALL

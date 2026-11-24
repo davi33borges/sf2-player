@@ -17,6 +17,13 @@ data class SlotState(
     val lowKey: Int = 0,
     val highKey: Int = 127,
     val channel: Int = -1,             // -1 = todos
+    val release: Float = 0f,           // -1..1 (0 = release original do SF2)
+    val velocity: Float = 1f,          // sensibilidade 0..1
+    val eqLow: Float = 0f,             // dB
+    val eqMid: Float = 0f,
+    val eqHigh: Float = 0f,
+    val cutoff: Float = 1f,            // 0..1 (1 = aberto)
+    val comp: Float = 0f,              // 0..1
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -28,7 +35,12 @@ data class SlotState(
         put("path", path ?: JSONObject.NULL); put("fileName", fileName); put("preset", preset)
         put("enabled", enabled); put("volume", volume.toDouble()); put("pan", pan.toDouble())
         put("transpose", transpose); put("lowKey", lowKey); put("highKey", highKey); put("channel", channel)
+        put("release", release.toDouble()); put("velocity", velocity.toDouble()); put("eqLow", eqLow.toDouble())
+        put("eqMid", eqMid.toDouble()); put("eqHigh", eqHigh.toDouble()); put("cutoff", cutoff.toDouble()); put("comp", comp.toDouble())
     }
+
+    /** Volta o timbre ao som original do SF2 (mantém arquivo, preset e teclado). */
+    fun resetSound() = copy(release = 0f, velocity = 1f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f)
 
     companion object {
         fun fromJson(o: JSONObject) = SlotState(
@@ -42,15 +54,29 @@ data class SlotState(
             lowKey = o.optInt("lowKey", 0),
             highKey = o.optInt("highKey", 127),
             channel = o.optInt("channel", -1),
+            release = o.optDouble("release", 0.0).toFloat(),
+            velocity = o.optDouble("velocity", 1.0).toFloat(),
+            eqLow = o.optDouble("eqLow", 0.0).toFloat(),
+            eqMid = o.optDouble("eqMid", 0.0).toFloat(),
+            eqHigh = o.optDouble("eqHigh", 0.0).toFloat(),
+            cutoff = o.optDouble("cutoff", 1.0).toFloat(),
+            comp = o.optDouble("comp", 0.0).toFloat(),
         )
     }
 }
 
 /** O que um controle do teclado faz no app. */
 enum class TargetType(val label: String, val continuous: Boolean) {
-    SLOT_VOLUME("Volume", true),
+    SLOT_VOLUME("Fader", true),
     SLOT_PAN("Pan", true),
-    SLOT_TOGGLE("Liga/desliga", false),
+    SLOT_RELEASE("Release", true),
+    SLOT_VELOCITY("Velocity", true),
+    SLOT_EQ_LOW("Grave", true),
+    SLOT_EQ_MID("Médio", true),
+    SLOT_EQ_HIGH("Agudo", true),
+    SLOT_CUTOFF("Cutoff", true),
+    SLOT_COMP("Compressor", true),
+    SLOT_TOGGLE("Liga/desliga (mute)", false),
     SLOT_PRESET_NEXT("Próximo preset", false),
     SLOT_PRESET_PREV("Preset anterior", false),
     MASTER_VOLUME("Volume geral", true),

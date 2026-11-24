@@ -10,17 +10,17 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,39 +31,31 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ChevronLeft
-import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Piano
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.StopCircle
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RangeSlider
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,37 +65,40 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.rarodoce.sf2player.LearnMode
 import com.rarodoce.sf2player.MainViewModel
+import com.rarodoce.sf2player.SLOT_COUNT
 import com.rarodoce.sf2player.SlotState
 import com.rarodoce.sf2player.Target
 import com.rarodoce.sf2player.TargetType
+import com.rarodoce.sf2player.cutoffLabel
+import com.rarodoce.sf2player.faderDb
 import com.rarodoce.sf2player.noteName
+import com.rarodoce.sf2player.releaseMul
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
-
-private val Mono = FontFamily.Monospace
 
 @Composable
 fun MainScreen(vm: MainViewModel) {
     val snack = remember { SnackbarHostState() }
     var showMidi by remember { mutableStateOf(false) }
     var pickSlot by remember { mutableIntStateOf(-1) }
-    var presetSlot by remember { mutableIntStateOf(-1) }
+    var configSlot by remember { mutableIntStateOf(-1) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null && pickSlot >= 0) vm.importFont(pickSlot, uri)
@@ -111,76 +106,60 @@ fun MainScreen(vm: MainViewModel) {
     }
     val pick: (Int) -> Unit = { i -> pickSlot = i; picker.launch(arrayOf("*/*")) }
 
-    LaunchedEffect(vm.toast) {
-        vm.toast?.let { snack.showSnackbar(it); vm.toast = null }
-    }
+    LaunchedEffect(vm.toast) { vm.toast?.let { snack.showSnackbar(it); vm.toast = null } }
+    // medidores: lê os níveis a cada quadro da tela
+    LaunchedEffect(Unit) { while (true) { withFrameNanos { }; vm.pollMeters() } }
 
     Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         Column(Modifier.fillMaxSize()) {
-            Header(vm, onMidi = { showMidi = true })
+            TopBar(vm, onMidi = { showMidi = true })
             AnimatedVisibility(visible = vm.learn != null) { LearnBanner(vm) }
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(340.dp),
-                contentPadding = PaddingValues(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                item(span = { GridItemSpan(maxLineSpan) }) { MasterStrip(vm) }
-                itemsIndexed(vm.slots) { i, s ->
-                    if (s.loaded) SlotCard(vm, i, s, onPick = { pick(i) }, onPresets = { presetSlot = i })
-                    else EmptySlot(i, s, onPick = { pick(i) })
-                }
-            }
+            Mixer(vm, Modifier.weight(1f), onConfig = { configSlot = it }, onPick = pick)
         }
-        SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+        SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(12.dp))
     }
 
     if (showMidi) MidiDialog(vm) { showMidi = false }
-    if (presetSlot >= 0) PresetDialog(vm, presetSlot) { presetSlot = -1 }
+    if (configSlot >= 0) {
+        val i = configSlot
+        if (vm.slots[i].loaded) ChannelConfig(vm, i, onClose = { configSlot = -1 }, onPick = { pick(i) })
+        else LaunchedEffect(i) { configSlot = -1 }
+    }
 }
 
-// ------------------------------------------------------------------ topo
+// ------------------------------------------------------------------ barra do topo
 
 @Composable
-private fun Header(vm: MainViewModel, onMidi: () -> Unit) {
+private fun TopBar(vm: MainViewModel, onMidi: () -> Unit) {
     var lit by remember { mutableStateOf(false) }
     LaunchedEffect(vm.activity) { if (vm.activity != 0L) { lit = true; delay(90); lit = false } }
     val led by animateColorAsState(if (lit) Accent else if (vm.connected != null) Ok else InkDim, tween(80), label = "led")
 
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Rounded.Piano, null, tint = Accent, modifier = Modifier.size(26.dp))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text("SF2 Player", fontWeight = FontWeight.Black, fontSize = 20.sp, color = Ink)
-            Text(
-                if (vm.audioOk) vm.lastEvent.ifEmpty { "Toque no teclado para testar" } else "Erro ao abrir o áudio",
-                color = if (vm.audioOk) InkDim else Color(0xFFFF5C5C), fontSize = 12.sp, fontFamily = Mono,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Icon(Icons.Rounded.Piano, null, tint = Accent, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("SF2 Player", fontWeight = FontWeight.Black, fontSize = 17.sp, color = Ink)
+        Spacer(Modifier.width(14.dp))
+        Text(
+            if (vm.audioOk) vm.lastEvent.ifEmpty { "Toque no teclado para testar" } else "Erro ao abrir o áudio",
+            color = if (vm.audioOk) InkDim else Color(0xFFFF5C5C), fontSize = 12.sp, fontFamily = Mono,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
         Row(
             Modifier.clip(RoundedCornerShape(50)).background(Panel).border(1.dp, Line, RoundedCornerShape(50))
-                .clickable(onClick = onMidi).padding(horizontal = 12.dp, vertical = 8.dp)
-                .widthIn(max = 220.dp),
+                .clickable(onClick = onMidi).padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 240.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.size(9.dp).clip(CircleShape).background(led))
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Rounded.Usb, null, tint = InkDim, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(4.dp))
-            Text(
-                vm.connected?.deviceName ?: "Sem teclado", fontSize = 13.sp, color = Ink,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
+            Text(vm.connected?.deviceName ?: "Sem teclado", fontSize = 13.sp, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Spacer(Modifier.width(8.dp))
-        IconButton(onClick = vm::panic) {
-            Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Color(0xFFFF5C5C))
-        }
+        IconButton(onClick = vm::panic) { Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Color(0xFFFF5C5C)) }
     }
 }
 
@@ -197,193 +176,118 @@ private fun LearnBanner(vm: MainViewModel) {
             else "Agora toque a nota MAIS AGUDA (a primeira foi ${noteName(l.low)})"
     }
     Row(
-        Modifier.fillMaxWidth().background(Accent.copy(alpha = 0.16f * pulse + 0.06f))
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().background(Accent.copy(alpha = 0.16f * pulse + 0.06f)).padding(horizontal = 16.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(Accent.copy(alpha = pulse)))
         Spacer(Modifier.width(10.dp))
-        Text(text, color = Ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Text(text, color = Ink, fontSize = 13.sp, modifier = Modifier.weight(1f))
         TextButton(onClick = vm::cancelLearn) { Text("Cancelar") }
     }
 }
 
-@Composable
-private fun MasterStrip(vm: MainViewModel) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Panel)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("GERAL", color = InkDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Spacer(Modifier.width(12.dp))
-        Slider(
-            value = vm.master, onValueChange = vm::setMasterVolume, valueRange = 0f..1.2f,
-            colors = sliderColors(Ink), modifier = Modifier.weight(1f),
-        )
-        Text("${(vm.master * 100).roundToInt()}%", fontFamily = Mono, fontSize = 13.sp, color = Ink,
-            modifier = Modifier.width(48.dp))
-        LearnChip(vm, Target(TargetType.MASTER_VOLUME), Ink)
-    }
-}
-
-// ------------------------------------------------------------------ instrumentos
+// ------------------------------------------------------------------ mesa
 
 @Composable
-private fun EmptySlot(i: Int, s: SlotState, onPick: () -> Unit) {
-    val color = SlotColors[i]
-    Box(
-        Modifier.fillMaxWidth().heightIn(min = 150.dp).clip(RoundedCornerShape(16.dp))
-            .drawBehind {
-                drawRoundRect(
-                    color = Line, cornerRadius = CornerRadius(16.dp.toPx()),
-                    style = Stroke(width = 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f))),
-                )
+private fun Mixer(vm: MainViewModel, modifier: Modifier, onConfig: (Int) -> Unit, onPick: (Int) -> Unit) {
+    BoxWithConstraints(modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp)) {
+        val masterW = 88.dp
+        val gap = 6.dp
+        val stripW = maxOf(84.dp, (maxWidth - masterW - gap * SLOT_COUNT - 4.dp) / SLOT_COUNT)
+        Row(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.weight(1f).fillMaxHeight().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(gap),
+            ) {
+                vm.slots.forEachIndexed { i, s ->
+                    ChannelStrip(vm, i, s, Modifier.width(stripW).fillMaxHeight(), onConfig = { onConfig(i) }, onPick = { onPick(i) })
+                }
             }
-            .clickable(enabled = !s.loading, onClick = onPick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (s.loading) {
-                CircularProgressIndicator(color = color, strokeWidth = 3.dp, modifier = Modifier.size(32.dp))
-                Spacer(Modifier.height(10.dp))
-                Text("Carregando…", color = InkDim, fontSize = 13.sp)
-            } else {
-                Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(color.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Rounded.Add, null, tint = color) }
-                Spacer(Modifier.height(10.dp))
-                Text("Instrumento ${i + 1}", color = Ink, fontWeight = FontWeight.SemiBold)
-                Text("Toque para adicionar um .sf2", color = InkDim, fontSize = 12.sp)
-                s.error?.let { Text(it, color = Color(0xFFFF5C5C), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
-            }
+            Spacer(Modifier.width(gap))
+            MasterStrip(vm, Modifier.width(masterW).fillMaxHeight())
         }
     }
 }
 
 @Composable
-private fun SlotCard(vm: MainViewModel, i: Int, s: SlotState, onPick: () -> Unit, onPresets: () -> Unit) {
+private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modifier, onConfig: () -> Unit, onPick: () -> Unit) {
     val color = SlotColors[i]
-    var menu by remember { mutableStateOf(false) }
-
+    val on = s.loaded && s.enabled
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel)
-            .border(1.dp, if (s.enabled) color.copy(alpha = 0.45f) else Line, RoundedCornerShape(16.dp)),
+        modifier.clip(RoundedCornerShape(12.dp)).background(Panel)
+            .border(1.dp, if (on) color.copy(alpha = 0.35f) else Line, RoundedCornerShape(12.dp)),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // faixa colorida no topo
-        Box(Modifier.fillMaxWidth().height(4.dp).background(if (s.enabled) color else Line))
-
-        Column(Modifier.padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp)) {
-            // cabeçalho
+        // cabeçalho: toque para configurar o timbre (ou adicionar um .sf2)
+        Column(
+            Modifier.fillMaxWidth().background(if (s.loaded) color.copy(alpha = if (on) 0.2f else 0.07f) else PanelHi)
+                .clickable(enabled = !s.loading) { if (s.loaded) onConfig() else onPick() }
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(color.copy(alpha = 0.18f)),
-                    contentAlignment = Alignment.Center,
-                ) { Text("${i + 1}", color = color, fontWeight = FontWeight.Black, fontFamily = Mono) }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(s.displayName, color = Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${s.presets.size} presets", color = InkDim, fontSize = 11.sp)
-                }
-                LearnChip(vm, Target(TargetType.SLOT_TOGGLE, i), color)
-                Switch(
-                    checked = s.enabled, onCheckedChange = { v -> vm.update(i) { it.copy(enabled = v) } },
-                    colors = SwitchDefaults.colors(checkedTrackColor = color, checkedThumbColor = Bg),
-                )
-                Box {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "Mais opções", tint = InkDim) }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("Trocar arquivo .sf2") }, onClick = { menu = false; onPick() })
-                        DropdownMenuItem(text = { Text("Mapear: próximo preset") },
-                            onClick = { menu = false; vm.startLearn(Target(TargetType.SLOT_PRESET_NEXT, i)) })
-                        DropdownMenuItem(text = { Text("Mapear: preset anterior") },
-                            onClick = { menu = false; vm.startLearn(Target(TargetType.SLOT_PRESET_PREV, i)) })
-                        HorizontalDivider()
-                        DropdownMenuItem(text = { Text("Remover instrumento", color = Color(0xFFFF5C5C)) },
-                            onClick = { menu = false; vm.removeFont(i) })
-                    }
+                Text("${i + 1}", color = if (s.loaded) color else InkDim, fontWeight = FontWeight.Black, fontFamily = Mono, fontSize = 13.sp)
+                if (s.loaded) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(Icons.Rounded.Tune, "Configurar timbre", tint = Ink.copy(alpha = 0.75f), modifier = Modifier.size(13.dp))
                 }
             }
-
-            Column(Modifier.alpha(if (s.enabled) 1f else 0.5f)) {
-                // preset
-                Row(
-                    Modifier.padding(top = 8.dp, end = 8.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                        .background(PanelHi),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { vm.setPreset(i, (s.preset - 1 + s.presets.size) % s.presets.size) }) {
-                        Icon(Icons.Rounded.ChevronLeft, "Preset anterior", tint = Ink)
-                    }
-                    Column(
-                        Modifier.weight(1f).clickable(onClick = onPresets).padding(vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(s.presetName, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${s.preset + 1} / ${s.presets.size} · toque para ver todos", color = InkDim, fontSize = 10.sp)
-                    }
-                    IconButton(onClick = { vm.setPreset(i, (s.preset + 1) % s.presets.size) }) {
-                        Icon(Icons.Rounded.ChevronRight, "Próximo preset", tint = Ink)
-                    }
+            when {
+                s.loading -> CircularProgressIndicator(color = color, strokeWidth = 2.dp, modifier = Modifier.padding(top = 2.dp).size(16.dp))
+                s.loaded -> {
+                    Text(s.displayName, color = Ink, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                    Text(s.presetName, color = InkDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                 }
-
-                ParamRow("VOL", "${(s.volume * 100).roundToInt()}%") {
-                    Slider(s.volume, { v -> vm.update(i) { it.copy(volume = v) } }, colors = sliderColors(color), modifier = Modifier.weight(1f))
-                    LearnChip(vm, Target(TargetType.SLOT_VOLUME, i), color)
-                }
-                ParamRow("PAN", panLabel(s.pan)) {
-                    Slider(s.pan, { v -> vm.update(i) { it.copy(pan = if (kotlin.math.abs(v - 0.5f) < 0.03f) 0.5f else v) } },
-                        colors = sliderColors(color), modifier = Modifier.weight(1f))
-                    LearnChip(vm, Target(TargetType.SLOT_PAN, i), color)
-                }
-
-                // faixa de teclas (split)
-                Row(Modifier.padding(top = 6.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("TECLAS", color = InkDim, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-                        modifier = Modifier.width(52.dp))
-                    Text("${noteName(s.lowKey)} – ${noteName(s.highKey)}", fontFamily = Mono, color = Ink, fontSize = 13.sp,
-                        modifier = Modifier.weight(1f))
-                    SmallButton("Tocar p/ definir", color) { vm.startRangeLearn(i) }
-                    Spacer(Modifier.width(6.dp))
-                    SmallButton("Todas", InkDim) { vm.update(i) { it.copy(lowKey = 0, highKey = 127) } }
-                }
-                KeyRangeBar(s.lowKey, s.highKey, color, Modifier.padding(top = 6.dp, end = 8.dp))
-                RangeSlider(
-                    value = s.lowKey.toFloat()..s.highKey.toFloat(),
-                    onValueChange = { r -> vm.update(i) { it.copy(lowKey = r.start.roundToInt(), highKey = r.endInclusive.roundToInt()) } },
-                    valueRange = 0f..127f, colors = sliderColors(color), modifier = Modifier.padding(end = 8.dp).height(32.dp),
-                )
-
-                // transposição e canal
-                Row(Modifier.padding(top = 2.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("TOM", color = InkDim, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-                        modifier = Modifier.width(52.dp))
-                    Stepper(
-                        label = when {
-                            s.transpose == 0 -> "0"
-                            s.transpose % 12 == 0 -> "${if (s.transpose > 0) "+" else ""}${s.transpose / 12} oit"
-                            else -> "${if (s.transpose > 0) "+" else ""}${s.transpose} st"
-                        },
-                        onMinus = { vm.update(i) { it.copy(transpose = (it.transpose - 1).coerceAtLeast(-48)) } },
-                        onPlus = { vm.update(i) { it.copy(transpose = (it.transpose + 1).coerceAtMost(48)) } },
-                        onMinusLong = { vm.update(i) { it.copy(transpose = (it.transpose - 12).coerceAtLeast(-48)) } },
-                        onPlusLong = { vm.update(i) { it.copy(transpose = (it.transpose + 12).coerceAtMost(48)) } },
-                    )
-                    Spacer(Modifier.weight(1f))
-                    ChannelPicker(s.channel) { ch -> vm.update(i) { it.copy(channel = ch) } }
+                else -> {
+                    Icon(Icons.Rounded.Add, null, tint = InkDim, modifier = Modifier.size(16.dp))
+                    Text(s.error ?: "Adicionar .sf2", color = if (s.error != null) Color(0xFFFF5C5C) else InkDim,
+                        fontSize = 9.sp, maxLines = 2, textAlign = TextAlign.Center)
                 }
             }
+        }
+
+        Column(
+            Modifier.weight(1f).fillMaxWidth().alpha(if (on) 1f else 0.45f).padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Knob(s.pan, { v -> vm.update(i) { it.copy(pan = if (kotlin.math.abs(v - 0.5f) < 0.02f) 0.5f else v) } },
+                color, size = 30.dp, bipolar = true, enabled = s.loaded)
+            Text(panLabel(s.pan), color = InkDim, fontSize = 9.sp, fontFamily = Mono)
+            VerticalFader(
+                s.volume, { v -> vm.update(i) { it.copy(volume = v) } }, color, level = { vm.meters[i] },
+                modifier = Modifier.weight(1f).fillMaxWidth(), enabled = s.loaded,
+            )
+            Text(if (s.loaded) faderDb(s.volume) else "", color = Ink, fontSize = 10.sp, fontFamily = Mono)
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            SmallButton(
+                if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Color(0xFFFF5C5C),
+                Modifier.weight(1f), filled = s.loaded && s.enabled,
+            ) { if (s.loaded) vm.update(i) { it.copy(enabled = !it.enabled) } }
+            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_VOLUME, i), color, Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun ParamRow(label: String, value: String, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
-    Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = InkDim, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.width(36.dp))
-        Text(value, fontFamily = Mono, color = Ink, fontSize = 12.sp, modifier = Modifier.width(44.dp))
-        content()
+private fun MasterStrip(vm: MainViewModel, modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).background(PanelHi).border(1.dp, Line, RoundedCornerShape(12.dp)),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("MASTER", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.5.sp,
+            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+        VerticalFader(
+            vm.master, vm::setMasterVolume, Ink, level = { vm.meters[SLOT_COUNT] },
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp),
+        )
+        Text(faderDb(vm.master), color = Ink, fontSize = 10.sp, fontFamily = Mono)
+        LearnChip(vm, Target(TargetType.MASTER_VOLUME), Ink, Modifier.padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 6.dp).fillMaxWidth())
     }
 }
 
@@ -392,138 +296,173 @@ private fun panLabel(p: Float): String {
     return when { v == 0 -> "C"; v < 0 -> "E${-v}"; else -> "D$v" }
 }
 
-@Composable
-private fun sliderColors(c: Color) = SliderDefaults.colors(
-    thumbColor = c, activeTrackColor = c, inactiveTrackColor = Line,
-    activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent,
-)
+private fun dbLabel(db: Float) = (if (db > 0.05f) "+" else "") + "%.1f dB".format(db)
 
-/** Mini teclado mostrando quais teclas este instrumento toca. */
+// ------------------------------------------------------------------ configurar timbre
+
 @Composable
-private fun KeyRangeBar(low: Int, high: Int, color: Color, modifier: Modifier = Modifier) {
-    Box(
-        modifier.fillMaxWidth().height(18.dp).clip(RoundedCornerShape(4.dp)).drawBehind {
-            // mostra só a extensão de um piano (A0 a C8)
-            val first = 21; val last = 108
-            val whites = (first..last).filter { it % 12 !in intArrayOf(1, 3, 6, 8, 10) }
-            val w = size.width / whites.size
-            whites.forEachIndexed { idx, n ->
-                val on = n in low..high
-                drawRect(
-                    if (on) color.copy(alpha = 0.85f) else Color(0xFF2C303B),
-                    topLeft = androidx.compose.ui.geometry.Offset(idx * w + 0.5f, 0f),
-                    size = androidx.compose.ui.geometry.Size(w - 1f, size.height),
-                )
-                if (n % 12 == 0) {
-                    drawRect(Color.Black.copy(alpha = 0.5f),
-                        topLeft = androidx.compose.ui.geometry.Offset(idx * w, size.height - 3f),
-                        size = androidx.compose.ui.geometry.Size(w, 3f))
+private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick: () -> Unit) {
+    val s = vm.slots[i]
+    val color = SlotColors[i]
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier.fillMaxSize().padding(10.dp).clip(RoundedCornerShape(16.dp)).background(Panel)
+                .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().background(color.copy(alpha = 0.14f)).padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(color), contentAlignment = Alignment.Center) {
+                    Text("${i + 1}", color = Bg, fontWeight = FontWeight.Black, fontFamily = Mono)
                 }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(s.displayName, color = Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Timbre e configurações do canal", color = InkDim, fontSize = 11.sp)
+                }
+                SmallButton("Trocar .sf2", Ink) { onClose(); onPick() }
+                Spacer(Modifier.width(6.dp))
+                SmallButton("Remover", Color(0xFFFF5C5C)) { onClose(); vm.removeFont(i) }
+                IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Fechar", tint = Ink) }
             }
-        },
-    )
-}
 
-@Composable
-private fun SmallButton(text: String, color: Color, onClick: () -> Unit) {
-    Text(
-        text, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.clip(RoundedCornerShape(8.dp)).border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 5.dp),
-    )
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun Stepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit, onMinusLong: () -> Unit, onPlusLong: () -> Unit) {
-    Row(
-        Modifier.clip(RoundedCornerShape(10.dp)).background(PanelHi),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("−", color = Ink, fontSize = 18.sp,
-            modifier = Modifier.combinedClickable(onClick = onMinus, onLongClick = onMinusLong).padding(horizontal = 12.dp, vertical = 4.dp))
-        Text(label, fontFamily = Mono, color = Ink, fontSize = 13.sp, modifier = Modifier.widthIn(min = 52.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        Text("+", color = Ink, fontSize = 18.sp,
-            modifier = Modifier.combinedClickable(onClick = onPlus, onLongClick = onPlusLong).padding(horizontal = 12.dp, vertical = 4.dp))
-    }
-}
-
-@Composable
-private fun ChannelPicker(channel: Int, onChange: (Int) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        SmallButton(if (channel < 0) "Canal: todos" else "Canal ${channel + 1}", InkDim) { open = true }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            DropdownMenuItem(text = { Text("Todos os canais") }, onClick = { open = false; onChange(-1) })
-            (0 until 16).forEach { c ->
-                DropdownMenuItem(text = { Text("Canal ${c + 1}") }, onClick = { open = false; onChange(c) })
+            Row(Modifier.weight(1f).fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PresetColumn(vm, i, s, color, Modifier.weight(1f).fillMaxHeight())
+                SoundColumn(vm, i, s, color, Modifier.weight(1.5f).fillMaxHeight())
+                KeyboardColumn(vm, i, s, color, Modifier.weight(1.15f).fillMaxHeight())
             }
         }
     }
 }
 
-/** Pílula "MIDI": toque para aprender, toque longo para apagar o mapeamento. */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LearnChip(vm: MainViewModel, target: Target, color: Color) {
-    val mapping = vm.mappingFor(target)
-    val learning = (vm.learn as? LearnMode.Control)?.target == target
-    val pulse by rememberInfiniteTransition(label = "chip").animateFloat(
-        0.3f, 1f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "c",
-    )
-    val bg = when { learning -> Accent.copy(alpha = pulse); mapping != null -> color.copy(alpha = 0.2f); else -> Color.Transparent }
-    Text(
-        text = when { learning -> "…"; mapping != null -> mapping.shortLabel(); else -> "MIDI" },
-        color = when { learning -> Bg; mapping != null -> color; else -> InkDim },
-        fontSize = 10.sp, fontFamily = Mono, fontWeight = FontWeight.Bold, maxLines = 1,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-        modifier = Modifier.padding(start = 4.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).background(bg)
-            .border(1.dp, if (mapping != null || learning) Color.Transparent else Line, RoundedCornerShape(6.dp))
-            .combinedClickable(
-                onClick = { if (learning) vm.cancelLearn() else vm.startLearn(target) },
-                onLongClick = { mapping?.let(vm::removeMapping) },
-            )
-            .padding(horizontal = 6.dp, vertical = 5.dp),
-    )
-}
-
-// ------------------------------------------------------------------ janelas
-
-@Composable
-private fun PresetDialog(vm: MainViewModel, i: Int, onClose: () -> Unit) {
-    val s = vm.slots[i]
+private fun PresetColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
     var query by remember { mutableStateOf("") }
     val list = s.presets.withIndex().filter { query.isBlank() || it.value.contains(query, true) }
-    AlertDialog(
-        onDismissRequest = onClose,
-        confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
-        title = { Text("Instrumento ${i + 1} · presets") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    query, { query = it }, singleLine = true, placeholder = { Text("Buscar") },
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) }, modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    itemsIndexed(list) { _, p ->
-                        val sel = p.index == s.preset
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .background(if (sel) SlotColors[i].copy(alpha = 0.18f) else Color.Transparent)
-                                .clickable { vm.setPreset(i, p.index) }.padding(horizontal = 10.dp, vertical = 10.dp),
-                        ) {
-                            Text("${p.index + 1}".padStart(3), fontFamily = Mono, color = InkDim, fontSize = 12.sp)
-                            Spacer(Modifier.width(10.dp))
-                            Text(p.value, color = if (sel) SlotColors[i] else Ink, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
-                        }
-                    }
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp)) {
+        SectionTitle("PRESET · ${s.preset + 1}/${s.presets.size}")
+        Row(
+            Modifier.padding(vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(PanelHi)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Search, null, tint = InkDim, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Box(Modifier.weight(1f)) {
+                if (query.isEmpty()) Text("Buscar", color = InkDim, fontSize = 13.sp)
+                BasicTextField(query, { query = it }, singleLine = true, textStyle = TextStyle(color = Ink, fontSize = 13.sp),
+                    cursorBrush = SolidColor(color), modifier = Modifier.fillMaxWidth())
+            }
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            itemsIndexed(list) { _, p ->
+                val sel = p.index == s.preset
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(7.dp))
+                        .background(if (sel) color.copy(alpha = 0.2f) else Color.Transparent)
+                        .clickable { vm.setPreset(i, p.index) }.padding(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text("${p.index + 1}".padStart(3), fontFamily = Mono, color = InkDim, fontSize = 11.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(p.value, color = if (sel) color else Ink, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
                 }
             }
-        },
-    )
+        }
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Preset − / +", color = InkDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+            LearnChip(vm, Target(TargetType.SLOT_PRESET_PREV, i), color)
+            Spacer(Modifier.width(4.dp))
+            LearnChip(vm, Target(TargetType.SLOT_PRESET_NEXT, i), color)
+        }
+    }
 }
+
+@Composable
+private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
+    val upd: ((SlotState) -> SlotState) -> Unit = { f -> vm.update(i, f) }
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("TIMBRE", Modifier.weight(1f))
+            SmallButton("Som original", InkDim) { upd { it.resetSound() } }
+        }
+        Text("Arraste os botões para cima ou para baixo. Toque duplo volta ao padrão.", color = InkDim, fontSize = 10.sp,
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Release", "%.2f×".format(releaseMul(s.release)), (s.release + 1) / 2,
+                { v -> upd { it.copy(release = v * 2 - 1) } }, color, Target(TargetType.SLOT_RELEASE, i), bipolar = true)
+            KnobCell(vm, "Velocity", if (s.velocity < 0.01f) "Fixa" else "${(s.velocity * 100).roundToInt()}%", s.velocity,
+                { v -> upd { it.copy(velocity = v) } }, color, Target(TargetType.SLOT_VELOCITY, i), default = 1f)
+            KnobCell(vm, "Cutoff", cutoffLabel(s.cutoff), s.cutoff,
+                { v -> upd { it.copy(cutoff = v) } }, color, Target(TargetType.SLOT_CUTOFF, i), default = 1f)
+            KnobCell(vm, "Compressor", if (s.comp < 0.01f) "Desl." else "${(s.comp * 100).roundToInt()}%", s.comp,
+                { v -> upd { it.copy(comp = v) } }, color, Target(TargetType.SLOT_COMP, i))
+        }
+        HorizontalDivider(color = Line, modifier = Modifier.padding(vertical = 6.dp))
+        SectionTitle("EQUALIZADOR")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Grave", dbLabel(s.eqLow), (s.eqLow + 12) / 24, { v -> upd { it.copy(eqLow = v * 24 - 12) } },
+                color, Target(TargetType.SLOT_EQ_LOW, i), bipolar = true)
+            KnobCell(vm, "Médio", dbLabel(s.eqMid), (s.eqMid + 12) / 24, { v -> upd { it.copy(eqMid = v * 24 - 12) } },
+                color, Target(TargetType.SLOT_EQ_MID, i), bipolar = true)
+            KnobCell(vm, "Agudo", dbLabel(s.eqHigh), (s.eqHigh + 12) / 24, { v -> upd { it.copy(eqHigh = v * 24 - 12) } },
+                color, Target(TargetType.SLOT_EQ_HIGH, i), bipolar = true)
+            KnobCell(vm, "Pan", panLabel(s.pan), s.pan, { v -> upd { it.copy(pan = v) } },
+                color, Target(TargetType.SLOT_PAN, i), bipolar = true)
+        }
+    }
+}
+
+@Composable
+private fun KeyboardColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+        SectionTitle("TECLAS (SPLIT)")
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("${noteName(s.lowKey)} – ${noteName(s.highKey)}", fontFamily = Mono, color = Ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            SmallButton("Tocar p/ definir", color) { vm.startRangeLearn(i) }
+            Spacer(Modifier.width(4.dp))
+            SmallButton("Todas", InkDim) { vm.update(i) { it.copy(lowKey = 0, highKey = 127) } }
+        }
+        KeyRangeBar(s.lowKey, s.highKey, color, Modifier.padding(top = 8.dp))
+        RangeSlider(
+            value = s.lowKey.toFloat()..s.highKey.toFloat(),
+            onValueChange = { r -> vm.update(i) { it.copy(lowKey = r.start.roundToInt(), highKey = r.endInclusive.roundToInt()) } },
+            valueRange = 0f..127f,
+            colors = SliderDefaults.colors(thumbColor = color, activeTrackColor = color, inactiveTrackColor = Line),
+            modifier = Modifier.height(36.dp),
+        )
+
+        SectionTitle("TOM", Modifier.padding(top = 6.dp))
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Stepper(
+                label = when {
+                    s.transpose == 0 -> "0"
+                    s.transpose % 12 == 0 -> "${if (s.transpose > 0) "+" else ""}${s.transpose / 12} oit"
+                    else -> "${if (s.transpose > 0) "+" else ""}${s.transpose} st"
+                },
+                onMinus = { vm.update(i) { it.copy(transpose = (it.transpose - 1).coerceAtLeast(-48)) } },
+                onPlus = { vm.update(i) { it.copy(transpose = (it.transpose + 1).coerceAtMost(48)) } },
+                onMinusLong = { vm.update(i) { it.copy(transpose = (it.transpose - 12).coerceAtLeast(-48)) } },
+                onPlusLong = { vm.update(i) { it.copy(transpose = (it.transpose + 12).coerceAtMost(48)) } },
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("segure ± para oitava", color = InkDim, fontSize = 10.sp)
+        }
+        Row(Modifier.padding(top = 10.dp)) { ChannelPicker(s.channel) { ch -> vm.update(i) { it.copy(channel = ch) } } }
+
+        SectionTitle("CONTROLES DO TECLADO", Modifier.padding(top = 12.dp))
+        Text("Toque em MIDI e mexa o controle. Segure para apagar.", color = InkDim, fontSize = 10.sp)
+        for ((label, t) in listOf("Fader" to TargetType.SLOT_VOLUME, "Liga/desliga (mute)" to TargetType.SLOT_TOGGLE)) {
+            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = Ink, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                LearnChip(vm, Target(t, i), color)
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ teclado MIDI e mapeamentos
 
 @Composable
 private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
@@ -532,44 +471,34 @@ private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
         confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
         title = { Text("Teclado e mapeamentos") },
         text = {
-            LazyColumn(Modifier.heightIn(max = 480.dp)) {
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 item {
-                    Text("ENTRADA MIDI", color = InkDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                    if (vm.sources.isEmpty()) {
-                        Text(
-                            "Nenhum teclado encontrado. Ligue o Launchkey no celular/tablet com um cabo USB OTG.",
-                            color = Ink, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp),
-                        )
-                    }
+                    SectionTitle("ENTRADA MIDI")
+                    if (vm.sources.isEmpty()) Text(
+                        "Nenhum teclado encontrado. Ligue o Launchkey com um cabo USB OTG.",
+                        color = Ink, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp),
+                    )
                 }
                 itemsIndexed(vm.sources) { _, src ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { vm.connect(src) },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Row(Modifier.fillMaxWidth().clickable { vm.connect(src) }, verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = vm.connected?.key == src.key, onClick = { vm.connect(src) })
                         Text(src.label, color = Ink, fontSize = 14.sp)
                     }
                 }
                 item {
-                    Text(
-                        "No Launchkey, use a porta 1 (MIDI). A porta DAW é usada pelos programas de música.",
-                        color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(bottom = 12.dp),
-                    )
+                    Text("No Launchkey, use a porta 1 (MIDI). A porta DAW é dos programas de música.",
+                        color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(bottom = 12.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
-                    Text("CONTROLES MAPEADOS", color = InkDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                    if (vm.mappings.isEmpty()) {
-                        Text(
-                            "Nenhum ainda. Toque em \"MIDI\" ao lado de um volume, pan ou botão liga/desliga e mexa o fader, knob ou pad do teclado.",
-                            color = Ink, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp),
-                        )
-                    }
+                    SectionTitle("CONTROLES MAPEADOS")
+                    if (vm.mappings.isEmpty()) Text(
+                        "Nenhum ainda. Toque em \"MIDI\" embaixo de um fader ou knob e mexa o controle do teclado.",
+                        color = Ink, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp),
+                    )
                 }
                 itemsIndexed(vm.mappings.toList()) { _, m ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val c = if (m.target.slot >= 0) SlotColors[m.target.slot] else Ink
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(c))
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(if (m.target.slot >= 0) SlotColors[m.target.slot] else Ink))
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(m.target.describe(), color = Ink, fontSize = 14.sp)
@@ -579,10 +508,7 @@ private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
                     }
                 }
                 item {
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { onClose(); vm.startLearn(Target(TargetType.PANIC)) }) {
-                        Text("Mapear botão \"parar todos os sons\"")
-                    }
+                    TextButton(onClick = { onClose(); vm.startLearn(Target(TargetType.PANIC)) }) { Text("Mapear botão \"parar todos os sons\"") }
                 }
             }
         },

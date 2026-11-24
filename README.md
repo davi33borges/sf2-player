@@ -3,8 +3,10 @@
 App Android que transforma o celular ou tablet num módulo de som para teclado MIDI
 (feito pensando no Novation Launchkey 61 MK4). Lê arquivos **.sf2** (SoundFont).
 
+- Interface de **mesa de som** (celular deitado): 8 canais com fader, pan, mute e medidor + master
 - Até **8 instrumentos** ao mesmo tempo, em camadas ou divididos pelo teclado (split)
-- Cada instrumento: preset, volume, pan, faixa de teclas, transposição e canal MIDI
+- Toque no nome do canal para configurar o timbre: preset, **release, velocity, cutoff, compressor,
+  grave, médio, agudo**, pan, faixa de teclas, transposição e canal MIDI
 - **MIDI learn**: toque em "MIDI" ao lado de um controle e mexa o fader/knob/botão/pad do teclado
 - Faixa de teclas pelo próprio teclado: "Tocar p/ definir" → nota mais grave → nota mais aguda
 - Botão vermelho no topo para parar todos os sons

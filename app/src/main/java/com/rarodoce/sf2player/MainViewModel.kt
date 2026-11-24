@@ -29,7 +29,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val slots = mutableStateListOf<SlotState>().apply { addAll(slotsFromJson(prefs.getString("slots", null))) }
     val mappings = mutableStateListOf<Mapping>().apply { addAll(mappingsFromJson(prefs.getString("mappings", null))) }
-    var master by mutableFloatStateOf(prefs.getFloat("master", 0.9f)); private set
+    var master by mutableFloatStateOf(prefs.getFloat("masterFader", 0.75f)); private set
+
+    /** Nível exibido nos medidores (0..1, já com queda suave): 8 canais + master. */
+    val meters = mutableStateListOf(*Array(SLOT_COUNT + 1) { 0f })
+    private val meterBuf = FloatArray(SLOT_COUNT + 1)
 
     var sources by mutableStateOf<List<MidiSource>>(emptyList()); private set
     var connected by mutableStateOf<MidiSource?>(null); private set
@@ -52,7 +56,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         audioOk = Engine.nativeStart()
-        Engine.nativeSetMaster(master)
+        Engine.nativeSetMaster(faderGain(master))
         midi.preferredKey = prefs.getString("midiSource", null)
         midi.start()
         // recarrega os instrumentos salvos
@@ -113,7 +117,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         when (t.type) {
             TargetType.SLOT_VOLUME -> if (isOn && s != null) update(t.slot) { it.copy(volume = v) }
             TargetType.SLOT_PAN -> if (isOn && s != null) update(t.slot) { it.copy(pan = v) }
-            TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v * 1.2f)
+            TargetType.SLOT_RELEASE -> if (isOn && s != null) update(t.slot) { it.copy(release = v * 2 - 1) }
+            TargetType.SLOT_VELOCITY -> if (isOn && s != null) update(t.slot) { it.copy(velocity = v) }
+            TargetType.SLOT_EQ_LOW -> if (isOn && s != null) update(t.slot) { it.copy(eqLow = v * 24 - 12) }
+            TargetType.SLOT_EQ_MID -> if (isOn && s != null) update(t.slot) { it.copy(eqMid = v * 24 - 12) }
+            TargetType.SLOT_EQ_HIGH -> if (isOn && s != null) update(t.slot) { it.copy(eqHigh = v * 24 - 12) }
+            TargetType.SLOT_CUTOFF -> if (isOn && s != null) update(t.slot) { it.copy(cutoff = v) }
+            TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
+            TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)
             // botões: só reage ao apertar (valor > 0)
             TargetType.SLOT_TOGGLE -> if (isOn && value > 0 && s != null) update(t.slot) { it.copy(enabled = !it.enabled) }
             TargetType.SLOT_PRESET_NEXT -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset + 1) % s.presets.size)
@@ -174,9 +185,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setPreset(i: Int, p: Int) = update(i) { it.copy(preset = p) }
 
     fun setMasterVolume(v: Float) {
-        master = v.coerceIn(0f, 1.2f)
-        Engine.nativeSetMaster(master)
+        master = v.coerceIn(0f, 1f)
+        Engine.nativeSetMaster(faderGain(master))
         scheduleSave()
+    }
+
+    /** Chamado pela tela a cada quadro: atualiza os medidores com queda suave. */
+    fun pollMeters() {
+        Engine.nativeReadMeters(meterBuf)
+        for (i in meterBuf.indices) {
+            val peak = meterBuf[i].coerceIn(0f, 2f)
+            val shown = meters[i]
+            val next = if (peak > shown) peak else shown * 0.88f
+            if (kotlin.math.abs(next - shown) > 0.002f || (next == 0f && shown != 0f)) meters[i] = if (next < 0.002f) 0f else next
+        }
     }
 
     fun panic() = Engine.nativePanic()
@@ -238,7 +260,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val saveTask = Runnable {
         prefs.edit()
             .putString("slots", slotsToJson(slots))
-            .putFloat("master", master)
+            .putFloat("masterFader", master)
             .apply()
     }
 
