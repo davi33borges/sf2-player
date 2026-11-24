@@ -165,6 +165,7 @@ struct Slot {
     float velSens = 1.f;       // 0 = velocity fixa, 1 = resposta total
     float eqLow = 0, eqMid = 0, eqHigh = 0, cutoff = 20000.f, comp = 0;
     float reverbSend = 0;
+    int output = 0;            // modo 2 saídas: 0 = L e R, 1 = só L, 2 = só R
     Biquad lp, low, mid, high;
     Compressor compressor;
     int8_t active[128];
@@ -191,9 +192,12 @@ public:
     Reverb reverb;
     float revSize = 0.6f, revTone = 0.6f, revLevel = 0.35f;
     float master = 0.9f;
+    bool dualMono = false;            // L e R como duas saídas independentes (ex.: caixa e mesa)
+    float outGain[2] = {1.f, 1.f}, curOut[2] = {1.f, 1.f};
+    int deviceId = 0;                 // 0 = saída padrão do Android
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
-    std::atomic<float> peaks[kSlots + 1];
+    std::atomic<float> peaks[kSlots + 3];   // canais, master, saída L, saída R
 
     Engine() {
         pending.reserve(1024); processing.reserve(1024); tmp.resize(kChunk * 2); revIn.resize(kChunk);
@@ -203,6 +207,7 @@ public:
 
     bool start() {
         oboe::AudioStreamBuilder b;
+        b.setDeviceId(deviceId);
         b.setDirection(oboe::Direction::Output)
          ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
          ->setSharingMode(oboe::SharingMode::Exclusive)
@@ -212,6 +217,11 @@ public:
          ->setDataCallback(this)
          ->setErrorCallback(this);
         oboe::Result r = b.openStream(stream);
+        if (r != oboe::Result::OK && deviceId != 0) {
+            LOGE("saída %d indisponível (%s), usando a padrão", deviceId, oboe::convertToText(r));
+            b.setDeviceId(0);
+            r = b.openStream(stream);
+        }
         if (r != oboe::Result::OK) { LOGE("openStream: %s", oboe::convertToText(r)); return false; }
         stream->setBufferSizeInFrames(stream->getFramesPerBurst() * 2);
         {
@@ -336,10 +346,21 @@ public:
                 s.compressor.process(t, n);
                 // fader com rampa (sem estalos ao mexer rápido)
                 float g0 = s.curGain, g1 = s.gain, step = (g1 - g0) / n;
-                for (int i = 0; i < n; ++i) {
-                    float gg = g0 + step * i;
-                    t[i * 2] *= gg; t[i * 2 + 1] *= gg;
-                    dst[i * 2] += t[i * 2]; dst[i * 2 + 1] += t[i * 2 + 1];
+                if (!dualMono) {
+                    for (int i = 0; i < n; ++i) {
+                        float gg = g0 + step * i;
+                        t[i * 2] *= gg; t[i * 2 + 1] *= gg;
+                        dst[i * 2] += t[i * 2]; dst[i * 2 + 1] += t[i * 2 + 1];
+                    }
+                } else {
+                    // 2 saídas independentes: cada lado recebe a mistura mono, conforme o roteamento do canal
+                    const float toL = s.output != 2 ? 1.f : 0.f, toR = s.output != 1 ? 1.f : 0.f;
+                    for (int i = 0; i < n; ++i) {
+                        float gg = g0 + step * i;
+                        t[i * 2] *= gg; t[i * 2 + 1] *= gg;
+                        float m = (t[i * 2] + t[i * 2 + 1]) * 0.7071f;
+                        dst[i * 2] += m * toL; dst[i * 2 + 1] += m * toR;
+                    }
                 }
                 s.curGain = g1;
                 peakOf(t, n * 2, slotPeak[si]);
@@ -353,16 +374,25 @@ public:
         for (int si = 0; si < kSlots; ++si) storePeak(si, slotPeak[si]);
 
         const float m = master;
-        float mp = 0;
-        for (int i = 0; i < frames * 2; ++i) {
-            float v = out[i] * m;
-            float a = std::fabs(v);
-            if (a > mp) mp = a;
-            // saturação suave acima de 0,8 para não clipar seco
-            if (a > 0.8f) v = (v > 0 ? 1.f : -1.f) * (0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f));
-            out[i] = v;
+        float mp = 0, op[2] = {0, 0};
+        float step[2] = {(outGain[0] - curOut[0]) / frames, (outGain[1] - curOut[1]) / frames};
+        for (int f = 0; f < frames; ++f) {
+            for (int ch = 0; ch < 2; ++ch) {
+                float v = out[f * 2 + ch] * m;
+                float a = std::fabs(v);
+                if (a > mp) mp = a;
+                v *= curOut[ch] + step[ch] * f;          // volume da saída L / R
+                a = std::fabs(v);
+                if (a > op[ch]) op[ch] = a;
+                // saturação suave acima de 0,8 para não clipar seco
+                if (a > 0.8f) v = (v > 0 ? 1.f : -1.f) * (0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f));
+                out[f * 2 + ch] = v;
+            }
         }
+        curOut[0] = outGain[0]; curOut[1] = outGain[1];
         storePeak(kSlots, mp);
+        storePeak(kSlots + 1, op[0]);
+        storePeak(kSlots + 2, op[1]);
         return oboe::DataCallbackResult::Continue;
     }
 
@@ -442,14 +472,14 @@ Java_com_rarodoce_sf2player_Engine_nativeUnload(JNIEnv*, jobject, jint idx) {
     if (old) tsf_close(old);
 }
 
-// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb]
+// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb, saída (0 L+R, 1 L, 2 R)]
 JNIEXPORT void JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx, jboolean enabled, jint preset,
         jint transpose, jint lowKey, jint highKey, jint channel, jfloatArray jp) {
     Slot* s = slotAt(idx);
-    if (!s || env->GetArrayLength(jp) < 10) return;
-    float p[10];
-    env->GetFloatArrayRegion(jp, 0, 10, p);
+    if (!s || env->GetArrayLength(jp) < 11) return;
+    float p[11];
+    env->GetFloatArrayRegion(jp, 0, 11, p);
 
     std::lock_guard<std::mutex> g(gEngine->lock);
     bool wasEnabled = s->enabled;
@@ -464,6 +494,7 @@ Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx,
     s->cutoff = std::clamp(p[7], 40.f, 20000.f);
     s->comp = std::clamp(p[8], 0.f, 1.f);
     s->reverbSend = std::clamp(p[9], 0.f, 1.f);
+    s->output = std::clamp((int)p[10], 0, 2);
     s->transpose = std::clamp((int)transpose, -48, 48);
     s->lowKey = std::clamp((int)lowKey, 0, 127);
     s->highKey = std::clamp((int)highKey, 0, 127);
@@ -500,13 +531,45 @@ Java_com_rarodoce_sf2player_Engine_nativeSetReverb(JNIEnv*, jobject, jfloat size
     gEngine->reverb.set(gEngine->revSize, gEngine->revTone, gEngine->revLevel);
 }
 
-/** Lê e zera os picos: 8 canais + master. */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeSetOutputs(JNIEnv*, jobject, jboolean dual, jfloat gainL, jfloat gainR) {
+    if (!gEngine) return;
+    std::lock_guard<std::mutex> g(gEngine->lock);
+    gEngine->dualMono = dual;
+    gEngine->outGain[0] = std::clamp((float)gainL, 0.f, 4.f);
+    gEngine->outGain[1] = std::clamp((float)gainR, 0.f, 4.f);
+}
+
+/** Troca a placa/saída de áudio (0 = padrão do Android) reabrindo o stream. */
+JNIEXPORT jboolean JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeSetDevice(JNIEnv*, jobject, jint id) {
+    if (!gEngine) return false;
+    gEngine->deviceId = id;
+    gEngine->stop();
+    return gEngine->start();
+}
+
+/** [taxa de amostragem, burst, buffer em quadros, id da saída em uso] */
+JNIEXPORT jintArray JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeStreamInfo(JNIEnv* env, jobject) {
+    jint v[4] = {0, 0, 0, 0};
+    if (gEngine && gEngine->stream) {
+        auto st = gEngine->stream;
+        v[0] = st->getSampleRate(); v[1] = st->getFramesPerBurst();
+        v[2] = st->getBufferSizeInFrames(); v[3] = st->getDeviceId();
+    }
+    jintArray a = env->NewIntArray(4);
+    env->SetIntArrayRegion(a, 0, 4, v);
+    return a;
+}
+
+/** Lê e zera os picos: 8 canais, master, saída L, saída R. */
 JNIEXPORT void JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeReadMeters(JNIEnv* env, jobject, jfloatArray out) {
     if (!gEngine) return;
-    float v[kSlots + 1];
-    for (int i = 0; i <= kSlots; ++i) v[i] = gEngine->peaks[i].exchange(0.f, std::memory_order_relaxed);
-    env->SetFloatArrayRegion(out, 0, kSlots + 1, v);
+    float v[kSlots + 3];
+    for (int i = 0; i < kSlots + 3; ++i) v[i] = gEngine->peaks[i].exchange(0.f, std::memory_order_relaxed);
+    env->SetFloatArrayRegion(out, 0, std::min((int)env->GetArrayLength(out), kSlots + 3), v);
 }
 
 JNIEXPORT void JNICALL

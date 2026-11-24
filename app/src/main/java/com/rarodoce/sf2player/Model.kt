@@ -25,6 +25,7 @@ data class SlotState(
     val cutoff: Float = 1f,            // 0..1 (1 = aberto)
     val comp: Float = 0f,              // 0..1
     val reverb: Float = 0.2f,          // envio para o reverb 0..1
+    val output: Int = 0,               // modo 2 saídas: 0 = L e R, 1 = só L, 2 = só R
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -38,7 +39,7 @@ data class SlotState(
         put("transpose", transpose); put("lowKey", lowKey); put("highKey", highKey); put("channel", channel)
         put("release", release.toDouble()); put("velocity", velocity.toDouble()); put("eqLow", eqLow.toDouble())
         put("eqMid", eqMid.toDouble()); put("eqHigh", eqHigh.toDouble()); put("cutoff", cutoff.toDouble()); put("comp", comp.toDouble())
-        put("reverb", reverb.toDouble())
+        put("reverb", reverb.toDouble()); put("output", output)
     }
 
     /** Volta o timbre ao som original do SF2 (mantém arquivo, preset e teclado). */
@@ -64,6 +65,7 @@ data class SlotState(
             cutoff = o.optDouble("cutoff", 1.0).toFloat(),
             comp = o.optDouble("comp", 0.0).toFloat(),
             reverb = o.optDouble("reverb", 0.2).toFloat(),
+            output = o.optInt("output", 0),
         )
     }
 }
@@ -85,6 +87,10 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     SLOT_PRESET_PREV("Preset anterior", false),
     MASTER_VOLUME("Volume geral", true),
     REVERB_LEVEL("Volume do reverb", true),
+    OUT_L_VOLUME("Volume da saída L", true),
+    OUT_R_VOLUME("Volume da saída R", true),
+    OUT_L_MUTE("Mute da saída L", false),
+    OUT_R_MUTE("Mute da saída R", false),
     PANIC("Parar todos os sons", false),
 }
 
@@ -195,4 +201,23 @@ fun <T> listFromJson(s: String?, f: (JSONObject) -> T): List<T> {
     if (s.isNullOrBlank()) return emptyList()
     return runCatching { val a = JSONArray(s); (0 until a.length()).mapNotNull { runCatching { f(a.getJSONObject(it)) }.getOrNull() } }
         .getOrDefault(emptyList())
+}
+
+/** Saídas da placa de áudio: estéreo normal ou L e R independentes, cada uma com volume e mute. */
+data class OutputState(
+    val dual: Boolean = false,
+    val volL: Float = 0.75f, val volR: Float = 0.75f,
+    val muteL: Boolean = false, val muteR: Boolean = false,
+    val deviceKey: String? = null,      // placa escolhida (null = automática)
+) {
+    fun toJson() = JSONObject().apply {
+        put("dual", dual); put("volL", volL.toDouble()); put("volR", volR.toDouble())
+        put("muteL", muteL); put("muteR", muteR); put("deviceKey", deviceKey ?: JSONObject.NULL)
+    }
+    companion object {
+        fun fromJson(o: JSONObject?) = if (o == null) OutputState() else OutputState(
+            o.optBoolean("dual"), o.optDouble("volL", 0.75).toFloat(), o.optDouble("volR", 0.75).toFloat(),
+            o.optBoolean("muteL"), o.optBoolean("muteR"), if (o.isNull("deviceKey")) null else o.optString("deviceKey"),
+        )
+    }
 }

@@ -39,8 +39,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var currentScene by mutableStateOf(prefs.getString("currentScene", null)); private set
 
     /** Nível exibido nos medidores (0..1, já com queda suave): 8 canais + master. */
-    val meters = mutableStateListOf(*Array(SLOT_COUNT + 1) { 0f })
-    private val meterBuf = FloatArray(SLOT_COUNT + 1)
+    val meters = mutableStateListOf(*Array(SLOT_COUNT + 3) { 0f })   // canais, master, saída L, saída R
+    private val meterBuf = FloatArray(SLOT_COUNT + 3)
+
+    var outputs by mutableStateOf(OutputState.fromJson(prefs.getString("outputs", null)?.let { runCatching { org.json.JSONObject(it) }.getOrNull() })); private set
+    var audioDevices by mutableStateOf<List<AudioOut>>(emptyList()); private set
+    /** [taxa, burst, buffer, id da saída em uso] */
+    var streamInfo by mutableStateOf(IntArray(4)); private set
+    private val audioOuts = AudioOutputs(app) { list -> audioDevices = list; routeToPreferredDevice() }
 
     var sources by mutableStateOf<List<MidiSource>>(emptyList()); private set
     var connected by mutableStateOf<MidiSource?>(null); private set
@@ -65,6 +71,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         audioOk = Engine.nativeStart()
         Engine.nativeSetMaster(faderGain(master))
         Engine.nativeSetReverb(reverb.size, reverb.tone, reverb.level)
+        applyOutputs()
+        audioDevices = audioOuts.list()
+        audioOuts.start()
+        routeToPreferredDevice()
         midi.preferredKey = prefs.getString("midiSource", null)
         midi.start()
         // recarrega os instrumentos salvos
@@ -131,6 +141,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
             TargetType.SLOT_REVERB -> if (isOn && s != null) update(t.slot) { it.copy(reverb = v) }
             TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)
+            TargetType.OUT_L_VOLUME -> if (isOn) changeOutputs(outputs.copy(volL = v))
+            TargetType.OUT_R_VOLUME -> if (isOn) changeOutputs(outputs.copy(volR = v))
+            TargetType.OUT_L_MUTE -> if (isOn && value > 0) changeOutputs(outputs.copy(muteL = !outputs.muteL))
+            TargetType.OUT_R_MUTE -> if (isOn && value > 0) changeOutputs(outputs.copy(muteR = !outputs.muteR))
             TargetType.REVERB_LEVEL -> if (isOn) changeReverb(reverb.copy(level = v))
             // botões: só reage ao apertar (valor > 0)
             TargetType.SLOT_TOGGLE -> if (isOn && value > 0 && s != null) update(t.slot) { it.copy(enabled = !it.enabled) }
@@ -209,6 +223,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun panic() = Engine.nativePanic()
+
+    // ---------------- placa de áudio e saídas ----------------
+
+    fun changeOutputs(o: OutputState) {
+        outputs = o
+        applyOutputs()
+        prefs.edit().putString("outputs", o.toJson().toString()).apply()
+    }
+
+    private fun applyOutputs() {
+        val o = outputs
+        Engine.nativeSetOutputs(o.dual, if (o.muteL) 0f else faderGain(o.volL), if (o.muteR) 0f else faderGain(o.volR))
+    }
+
+    /** Escolhe a placa (null = automático: o Android decide, normalmente a placa USB quando plugada). */
+    fun selectDevice(d: AudioOut?) {
+        changeOutputs(outputs.copy(deviceKey = d?.key))
+        Engine.nativeSetDevice(d?.id ?: 0)
+        refreshStreamInfo()
+        toast = if (d == null) "Saída automática" else "Saída: ${d.name}"
+    }
+
+    private fun routeToPreferredDevice() {
+        val key = outputs.deviceKey
+        val want = audioDevices.firstOrNull { it.key == key }?.id ?: 0
+        val current = Engine.nativeStreamInfo()[3]
+        // automático: deixa o Android escolher; placa escolhida: reabre nela (ou na padrão, se ela sumiu)
+        if (key != null && want != current) Engine.nativeSetDevice(want)
+        refreshStreamInfo()
+    }
+
+    fun refreshStreamInfo() { streamInfo = Engine.nativeStreamInfo() }
 
     fun changeReverb(r: ReverbState) {
         reverb = r
@@ -386,6 +432,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         saveTask.run()
         midi.release()
+        audioOuts.stop()
         Engine.nativeStop()
         io.shutdown()
     }

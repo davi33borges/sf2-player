@@ -107,7 +107,7 @@ fun MainScreen(vm: MainViewModel) {
     var pickSlot by remember { mutableIntStateOf(-1) }
     var configSlot by remember { mutableIntStateOf(-1) }
     var showScenes by remember { mutableStateOf(false) }
-    var showReverb by remember { mutableStateOf(false) }
+    var showMaster by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null && pickSlot >= 0) vm.importFont(pickSlot, uri)
@@ -124,7 +124,11 @@ fun MainScreen(vm: MainViewModel) {
             TopBar(vm, onMidi = { showMidi = true }, onScenes = { showScenes = true })
             AnimatedVisibility(visible = vm.learn != null) { LearnBanner(vm) }
             Box(Modifier.weight(1f)) {
-                Mixer(vm, Modifier.fillMaxSize(), onConfig = { configSlot = it }, onPick = pick, onMaster = { showReverb = true })
+                Mixer(vm, Modifier.fillMaxSize(), onConfig = { configSlot = it }, onPick = pick, onMaster = { showMaster = true; vm.refreshStreamInfo() })
+                if (showMaster) {
+                    BackHandler { showMaster = false }
+                    MasterConfig(vm) { showMaster = false }
+                }
                 // painel de timbre por cima da mesa (fica sempre dentro da tela)
                 if (configSlot >= 0) {
                     val i = configSlot
@@ -139,7 +143,6 @@ fun MainScreen(vm: MainViewModel) {
 
     if (showMidi) MidiDialog(vm) { showMidi = false }
     if (showScenes) ScenesDialog(vm) { showScenes = false }
-    if (showReverb) ReverbDialog(vm) { showReverb = false }
 }
 
 // ------------------------------------------------------------------ barra do topo
@@ -253,6 +256,11 @@ private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modi
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("${i + 1}", color = if (s.loaded) color else InkDim, fontWeight = FontWeight.Black, fontFamily = Mono, fontSize = 13.sp)
+                if (s.loaded && vm.outputs.dual && s.output != 0) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (s.output == 1) "L" else "R", color = Bg, fontSize = 9.sp, fontWeight = FontWeight.Black,
+                        modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(Color(0xFF8FB8FF)).padding(horizontal = 3.dp))
+                }
                 if (s.loaded) {
                     Spacer(Modifier.width(4.dp))
                     Icon(Icons.Rounded.Tune, "Configurar timbre", tint = Ink.copy(alpha = 0.75f), modifier = Modifier.size(13.dp))
@@ -315,7 +323,7 @@ private fun MasterStrip(vm: MainViewModel, modifier: Modifier, onMaster: () -> U
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("MASTER", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.sp)
                 Spacer(Modifier.width(3.dp))
-                Icon(Icons.Rounded.Tune, "Reverb", tint = Ink.copy(alpha = 0.7f), modifier = Modifier.size(12.dp))
+                Icon(Icons.Rounded.Tune, "Configurar master", tint = Ink.copy(alpha = 0.7f), modifier = Modifier.size(12.dp))
             }
             Knob(vm.reverb.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) }, Color(0xFF8FB8FF), size = 30.dp, default = 0.35f)
             Text("REV ${(vm.reverb.level * 100).roundToInt()}%", color = InkDim, fontSize = 9.sp, fontFamily = Mono)
@@ -533,6 +541,18 @@ private fun KeyboardColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color
         }
         Row(Modifier.padding(top = 10.dp)) { ChannelPicker(s.channel) { ch -> vm.update(i) { it.copy(channel = ch) } } }
 
+        SectionTitle("SAÍDA DA PLACA", Modifier.padding(top = 12.dp))
+        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("L e R", "Só L", "Só R").forEachIndexed { idx, label ->
+                SmallButton(label, color, filled = s.output == idx) { vm.update(i) { it.copy(output = idx) } }
+            }
+        }
+        Text(
+            if (vm.outputs.dual) "Modo 2 saídas ligado no MASTER: este canal vai para ${listOf("as duas saídas", "a saída L", "a saída R")[s.output]}."
+            else "Vale quando o MASTER está no modo \"2 saídas independentes\".",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp),
+        )
+
         SectionTitle("CONTROLES DO TECLADO", Modifier.padding(top = 12.dp))
         Text("Toque em MIDI e mexa o controle. Segure para apagar.", color = InkDim, fontSize = 10.sp)
         for ((label, t) in listOf("Fader (volume)" to TargetType.SLOT_VOLUME, "Liga/desliga o timbre" to TargetType.SLOT_TOGGLE)) {
@@ -598,31 +618,6 @@ private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
 }
 
 // ------------------------------------------------------------------ reverb, presets e timbres
-
-@Composable
-private fun ReverbDialog(vm: MainViewModel, onClose: () -> Unit) {
-    val r = vm.reverb
-    val c = Color(0xFF8FB8FF)
-    AlertDialog(
-        onDismissRequest = onClose,
-        confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
-        title = { Text("Reverb geral") },
-        text = {
-            Column {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.changeReverb(vm.reverb.copy(size = v)) },
-                        c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
-                    KnobCell(vm, "Tom", if (r.tone < 0.35f) "Escuro" else if (r.tone > 0.7f) "Brilhante" else "Médio", r.tone,
-                        { v -> vm.changeReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
-                    KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) },
-                        c, Target(TargetType.REVERB_LEVEL), default = 0.35f)
-                }
-                Text("Quanto cada instrumento manda para o reverb é ajustado no knob Reverb de cada canal.",
-                    color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-        },
-    )
-}
 
 @Composable
 private fun NameDialog(title: String, hint: String, initial: String, info: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
@@ -736,4 +731,149 @@ private fun TimbresDialog(vm: MainViewModel, i: Int, onClose: () -> Unit) {
             }
         },
     )
+}
+
+// ------------------------------------------------------------------ master: placa, saídas L/R e reverb
+
+@Composable
+private fun MasterConfig(vm: MainViewModel, onClose: () -> Unit) {
+    val blue = Color(0xFF8FB8FF)
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(14.dp)).background(Panel)
+            .border(1.dp, Line, RoundedCornerShape(14.dp))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+    ) {
+        Row(
+            Modifier.fillMaxWidth().background(PanelHi).padding(start = 14.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("MASTER", color = Ink, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            Spacer(Modifier.width(10.dp))
+            Text("Placa de áudio, saídas L/R e reverb", color = InkDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Fechar", tint = Ink) }
+        }
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(8.dp)) {
+            val w1 = 250.dp; val w2 = 330.dp; val w3 = 250.dp; val gap = 8.dp
+            val wide = maxWidth >= w1 + w2 + w3 + gap * 2
+            val rowMod = if (wide) Modifier.fillMaxSize() else Modifier.fillMaxSize().horizontalScroll(rememberScrollState())
+            Row(rowMod, horizontalArrangement = Arrangement.spacedBy(gap)) {
+                DeviceColumn(vm, if (wide) Modifier.weight(1f).fillMaxHeight() else Modifier.width(w1).fillMaxHeight())
+                OutputsColumn(vm, if (wide) Modifier.weight(1.3f).fillMaxHeight() else Modifier.width(w2).fillMaxHeight())
+                ReverbColumn(vm, blue, if (wide) Modifier.weight(1f).fillMaxHeight() else Modifier.width(w3).fillMaxHeight())
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceColumn(vm: MainViewModel, modifier: Modifier) {
+    val info = vm.streamInfo
+    val current = vm.outputs.deviceKey
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+        SectionTitle("PLACA DE ÁUDIO")
+        DeviceRow("Automático", "O Android escolhe (usa a placa USB quando plugada)", current == null) { vm.selectDevice(null) }
+        vm.audioDevices.forEach { d ->
+            DeviceRow(d.name, "${d.typeLabel} · ${d.channels} canais", current == d.key, highlight = d.isExternal && info[3] == d.id) {
+                vm.selectDevice(d)
+            }
+        }
+        if (current != null && vm.audioDevices.none { it.key == current }) {
+            Text("A placa escolhida não está conectada. Usando a saída padrão.", color = Color(0xFFFFD54F), fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp))
+        }
+        if (info[0] > 0) {
+            val ms = info[2] * 1000f / info[0]
+            Text("${info[0]} Hz · buffer ${info[2]} amostras (≈ %.1f ms)".format(ms), color = InkDim, fontSize = 11.sp,
+                fontFamily = Mono, modifier = Modifier.padding(top = 8.dp))
+        }
+        Text(
+            "Para usar o teclado e a placa juntos no celular, use um hub USB (de preferência com fonte) no adaptador OTG.",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun DeviceRow(title: String, subtitle: String, selected: Boolean, highlight: Boolean = false, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Accent.copy(alpha = 0.14f) else Color.Transparent).clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(Modifier.weight(1f).padding(end = 6.dp)) {
+            Text(title, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, color = if (highlight) Ok else InkDim, fontSize = 10.sp, maxLines = 2)
+        }
+    }
+}
+
+@Composable
+private fun OutputsColumn(vm: MainViewModel, modifier: Modifier) {
+    val o = vm.outputs
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp)) {
+        SectionTitle("SAÍDAS")
+        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SmallButton("Estéreo", Accent, filled = !o.dual) { vm.changeOutputs(o.copy(dual = false)) }
+            SmallButton("2 saídas independentes", Accent, filled = o.dual) { vm.changeOutputs(o.copy(dual = true)) }
+        }
+        Text(
+            if (o.dual) "L e R recebem a mistura completa (mono), cada uma com seu volume. Ex.: L na caixa, R na mesa de som. " +
+                "Em cada canal dá para mandar só para L ou só para R."
+            else "Som estéreo normal. Os faders ajustam o volume de cada lado.",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+        )
+        Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutputStrip(vm, "L", "Saída 1", o.volL, o.muteL, SLOT_COUNT + 1, TargetType.OUT_L_VOLUME, TargetType.OUT_L_MUTE,
+                onVol = { vm.changeOutputs(vm.outputs.copy(volL = it)) }, onMute = { vm.changeOutputs(vm.outputs.copy(muteL = !vm.outputs.muteL)) },
+                modifier = Modifier.weight(1f).fillMaxHeight())
+            OutputStrip(vm, "R", "Saída 2", o.volR, o.muteR, SLOT_COUNT + 2, TargetType.OUT_R_VOLUME, TargetType.OUT_R_MUTE,
+                onVol = { vm.changeOutputs(vm.outputs.copy(volR = it)) }, onMute = { vm.changeOutputs(vm.outputs.copy(muteR = !vm.outputs.muteR)) },
+                modifier = Modifier.weight(1f).fillMaxHeight())
+        }
+    }
+}
+
+@Composable
+private fun OutputStrip(
+    vm: MainViewModel, side: String, label: String, vol: Float, muted: Boolean, meter: Int,
+    volTarget: TargetType, muteTarget: TargetType, onVol: (Float) -> Unit, onMute: () -> Unit, modifier: Modifier,
+) {
+    val c = Color(0xFF8FB8FF)
+    Column(modifier.clip(RoundedCornerShape(10.dp)).background(Panel).padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("$side · $label", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp)
+        Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            VerticalFader(vol, onVol, c, level = { vm.meters[meter] }, modifier = Modifier.weight(1f).fillMaxHeight())
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(faderDb(vol), color = Ink, fontSize = 11.sp, fontFamily = Mono)
+                Text("volume", color = InkDim, fontSize = 9.sp)
+                LearnChip(vm, Target(volTarget), c)
+                Spacer(Modifier.height(8.dp))
+                Text("mute", color = InkDim, fontSize = 9.sp)
+                LearnChip(vm, Target(muteTarget), c)
+            }
+        }
+        SmallButton(if (muted) "MUTE" else "ON", if (muted) Color(0xFFFF5C5C) else c, Modifier.fillMaxWidth().padding(top = 4.dp),
+            filled = !muted, onClick = onMute)
+    }
+}
+
+@Composable
+private fun ReverbColumn(vm: MainViewModel, c: Color, modifier: Modifier) {
+    val r = vm.reverb
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+        SectionTitle("REVERB GERAL")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.changeReverb(vm.reverb.copy(size = v)) },
+                c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
+            KnobCell(vm, "Tom", if (r.tone < 0.35f) "Escuro" else if (r.tone > 0.7f) "Brilhante" else "Médio", r.tone,
+                { v -> vm.changeReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) },
+                c, Target(TargetType.REVERB_LEVEL), default = 0.35f)
+        }
+        Text("Quanto cada instrumento manda para o reverb é o knob Reverb no painel de cada canal.",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
+    }
 }

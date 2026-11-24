@@ -14,7 +14,13 @@ object Engine {
         slot: Int, enabled: Boolean, preset: Int, transpose: Int,
         lowKey: Int, highKey: Int, channel: Int, p: FloatArray,
     )
-    /** Picos de nível desde a última leitura: 8 canais + master. */
+    /** L e R como duas saídas independentes (dual mono) ou estéreo normal, com o volume de cada lado. */
+    external fun nativeSetOutputs(dual: Boolean, gainL: Float, gainR: Float)
+    /** Escolhe a placa/saída de áudio (id do AudioDeviceInfo; 0 = padrão). */
+    external fun nativeSetDevice(id: Int): Boolean
+    /** [taxa, burst, buffer, id da saída em uso] */
+    external fun nativeStreamInfo(): IntArray
+    /** Picos de nível desde a última leitura: 8 canais, master, saída L, saída R. */
     external fun nativeReadMeters(out: FloatArray)
     external fun nativeSetMaster(volume: Float)
     /** Reverb geral: tamanho, tom (brilho) e volume, todos 0..1. */
@@ -29,7 +35,7 @@ object Engine {
         index, s.enabled, s.preset, s.transpose, s.lowKey, s.highKey, s.channel,
         floatArrayOf(
             faderGain(s.volume), s.pan, releaseMul(s.release), s.velocity,
-            s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp, s.reverb,
+            s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp, s.reverb, s.output.toFloat(),
         ),
     )
 }
