@@ -9,7 +9,7 @@ object Engine {
     /** Carrega o .sf2 no slot e devolve os nomes dos presets (null = arquivo inválido). */
     external fun nativeLoad(slot: Int, path: String, preset: Int): Array<String>?
     external fun nativeUnload(slot: Int)
-    /** p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor] */
+    /** p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb] */
     external fun nativeSetSlot(
         slot: Int, enabled: Boolean, preset: Int, transpose: Int,
         lowKey: Int, highKey: Int, channel: Int, p: FloatArray,
@@ -17,6 +17,8 @@ object Engine {
     /** Picos de nível desde a última leitura: 8 canais + master. */
     external fun nativeReadMeters(out: FloatArray)
     external fun nativeSetMaster(volume: Float)
+    /** Reverb geral: tamanho, tom (brilho) e volume, todos 0..1. */
+    external fun nativeSetReverb(size: Float, tone: Float, level: Float)
     external fun nativeNoteOn(channel: Int, key: Int, velocity: Int)
     external fun nativeNoteOff(channel: Int, key: Int)
     external fun nativeControl(channel: Int, cc: Int, value: Int)
@@ -27,7 +29,7 @@ object Engine {
         index, s.enabled, s.preset, s.transpose, s.lowKey, s.highKey, s.channel,
         floatArrayOf(
             faderGain(s.volume), s.pan, releaseMul(s.release), s.velocity,
-            s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp,
+            s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp, s.reverb,
         ),
     )
 }

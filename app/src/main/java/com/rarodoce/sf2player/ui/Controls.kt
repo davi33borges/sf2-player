@@ -281,13 +281,13 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 fun KnobCell(
     vm: MainViewModel, label: String, valueText: String, value: Float, onChange: (Float) -> Unit,
     color: Color, target: Target, bipolar: Boolean = false, default: Float = if (bipolar) 0.5f else 0f,
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier, showLearn: Boolean = true,
 ) {
     Column(modifier.padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = Ink, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         Knob(value, onChange, color, size = 48.dp, bipolar = bipolar, default = default)
         Text(valueText, color = InkDim, fontSize = 10.sp, fontFamily = Mono, maxLines = 1)
-        LearnChip(vm, target, color, Modifier.padding(top = 3.dp))
+        if (showLearn) LearnChip(vm, target, color, Modifier.padding(top = 3.dp))
     }
 }
 

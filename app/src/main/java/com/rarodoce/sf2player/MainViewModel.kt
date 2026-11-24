@@ -30,6 +30,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val slots = mutableStateListOf<SlotState>().apply { addAll(slotsFromJson(prefs.getString("slots", null))) }
     val mappings = mutableStateListOf<Mapping>().apply { addAll(mappingsFromJson(prefs.getString("mappings", null))) }
     var master by mutableFloatStateOf(prefs.getFloat("masterFader", 0.75f)); private set
+    var reverb by mutableStateOf(ReverbState.fromJson(prefs.getString("reverb", null)?.let { runCatching { org.json.JSONObject(it) }.getOrNull() })); private set
+
+    private val scenesFile = File(app.filesDir, "presets.json")
+    private val timbresFile = File(app.filesDir, "timbres.json")
+    val scenes = mutableStateListOf<Scene>().apply { addAll(listFromJson(scenesFile.takeIf { it.exists() }?.readText(), Scene::fromJson)) }
+    val timbres = mutableStateListOf<Timbre>().apply { addAll(listFromJson(timbresFile.takeIf { it.exists() }?.readText(), Timbre::fromJson)) }
+    var currentScene by mutableStateOf(prefs.getString("currentScene", null)); private set
 
     /** Nível exibido nos medidores (0..1, já com queda suave): 8 canais + master. */
     val meters = mutableStateListOf(*Array(SLOT_COUNT + 1) { 0f })
@@ -57,14 +64,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         audioOk = Engine.nativeStart()
         Engine.nativeSetMaster(faderGain(master))
+        Engine.nativeSetReverb(reverb.size, reverb.tone, reverb.level)
         midi.preferredKey = prefs.getString("midiSource", null)
         midi.start()
         // recarrega os instrumentos salvos
         slots.forEachIndexed { i, s ->
-            if (s.path != null) {
-                if (File(s.path).exists()) loadFromPath(i, s.path, s.fileName, s.preset)
-                else slots[i] = SlotState()
-            }
+            if (s.path != null) loadSlotState(i, s)
         }
     }
 
@@ -124,7 +129,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_EQ_HIGH -> if (isOn && s != null) update(t.slot) { it.copy(eqHigh = v * 24 - 12) }
             TargetType.SLOT_CUTOFF -> if (isOn && s != null) update(t.slot) { it.copy(cutoff = v) }
             TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
+            TargetType.SLOT_REVERB -> if (isOn && s != null) update(t.slot) { it.copy(reverb = v) }
             TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)
+            TargetType.REVERB_LEVEL -> if (isOn) setReverb(reverb.copy(level = v))
             // botões: só reage ao apertar (valor > 0)
             TargetType.SLOT_TOGGLE -> if (isOn && value > 0 && s != null) update(t.slot) { it.copy(enabled = !it.enabled) }
             TargetType.SLOT_PRESET_NEXT -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset + 1) % s.presets.size)
@@ -203,64 +210,171 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun panic() = Engine.nativePanic()
 
-    /** Copia o .sf2 escolhido para dentro do app e carrega no slot. */
+    fun setReverb(r: ReverbState) {
+        reverb = r
+        Engine.nativeSetReverb(r.size, r.tone, r.level)
+        scheduleSave()
+    }
+
+    /**
+     * Copia o .sf2 escolhido para a biblioteca do app (um arquivo por nome+tamanho, sem duplicar)
+     * e carrega no canal, mantendo os ajustes de som do canal.
+     */
     fun importFont(i: Int, uri: Uri) {
         val ctx = getApplication<Application>()
-        val name = ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "instrumento.sf2"
+        var name = "instrumento.sf2"; var size = -1L
+        ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) { name = c.getString(0) ?: name; if (!c.isNull(1)) size = c.getLong(1) }
+        }
         slots[i] = slots[i].copy(loading = true, error = null)
         io.execute {
-            val dest = File(fontsDir, "slot${i}_${System.currentTimeMillis()}.sf2")
-            val ok = runCatching {
-                ctx.contentResolver.openInputStream(uri)!!.use { input -> dest.outputStream().use { input.copyTo(it, 1 shl 16) } }
-            }.isSuccess
-            if (!ok) {
-                dest.delete()
-                main.post { slots[i] = slots[i].copy(loading = false, error = "Não consegui ler o arquivo") }
-                return@execute
+            val base = name.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9._ -]"), "_").take(60)
+            var dest = File(fontsDir, "${base}_$size.sf2")
+            if (size < 0 || !dest.exists() || dest.length() != size) {
+                val tmp = File(fontsDir, "import_${System.nanoTime()}.tmp")
+                val ok = runCatching {
+                    ctx.contentResolver.openInputStream(uri)!!.use { input -> tmp.outputStream().use { input.copyTo(it, 1 shl 16) } }
+                }.isSuccess
+                if (!ok) {
+                    tmp.delete()
+                    main.post { slots[i] = slots[i].copy(loading = false, error = "Não consegui ler o arquivo") }
+                    return@execute
+                }
+                dest = File(fontsDir, "${base}_${tmp.length()}.sf2")
+                if (dest.exists()) tmp.delete() else tmp.renameTo(dest)
             }
-            val old = slots[i].path
-            loadBlocking(i, dest.absolutePath, name, 0, keepSettings = true) { success ->
-                if (success && old != null && old != dest.absolutePath) File(old).delete()
-                if (!success) dest.delete()
+            loadBlocking(i, dest.absolutePath, name, 0) { cleanupFonts() }
+        }
+    }
+
+    /** Coloca um estado completo no canal, carregando o .sf2 se for outro arquivo. */
+    private fun loadSlotState(i: Int, target: SlotState) {
+        val path = target.path
+        when {
+            path == null -> { Engine.nativeUnload(i); slots[i] = SlotState(); scheduleSave() }
+            !File(path).exists() -> {
+                Engine.nativeUnload(i)
+                slots[i] = SlotState(error = "Arquivo não encontrado: ${target.fileName}")
+            }
+            slots[i].path == path && slots[i].loaded -> update(i) { target.copy(presets = it.presets, loading = false, error = null) }
+            else -> {
+                slots[i] = target.copy(presets = emptyList(), loading = true, error = null)
+                io.execute { loadBlocking(i, path, target.fileName, target.preset) {} }
             }
         }
     }
 
-    private fun loadFromPath(i: Int, path: String, name: String, preset: Int) {
-        slots[i] = slots[i].copy(loading = true)
-        io.execute { loadBlocking(i, path, name, preset, keepSettings = true) {} }
-    }
-
-    private fun loadBlocking(i: Int, path: String, name: String, preset: Int, keepSettings: Boolean, done: (Boolean) -> Unit) {
+    private fun loadBlocking(i: Int, path: String, name: String, preset: Int, done: (Boolean) -> Unit) {
         val names = Engine.nativeLoad(i, path, preset)
         main.post {
             if (names == null || names.isEmpty()) {
-                slots[i] = slots[i].copy(loading = false, error = "Arquivo SF2 inválido ou corrompido")
+                slots[i] = slots[i].copy(loading = false, presets = emptyList(), path = null, error = "Arquivo SF2 inválido ou corrompido")
                 done(false)
             } else {
-                val base = if (keepSettings) slots[i] else SlotState()
                 val p = if (preset in names.indices) preset else 0
-                update(i) { base.copy(path = path, fileName = name, presets = names.toList(), preset = p, loading = false, error = null) }
+                update(i) { it.copy(path = path, fileName = name, presets = names.toList(), preset = p, loading = false, error = null) }
                 done(true)
             }
         }
     }
 
     fun removeFont(i: Int) {
-        val old = slots[i].path
         Engine.nativeUnload(i)
         slots[i] = SlotState()
         mappings.removeAll { it.target.slot == i }
         saveMappings()
-        old?.let { io.execute { File(it).delete() } }
         scheduleSave()
+        cleanupFonts()
+    }
+
+    /** Apaga da biblioteca os .sf2 que não estão em nenhum canal, preset geral ou timbre salvo. */
+    private fun cleanupFonts() {
+        val used = HashSet<String>()
+        slots.mapNotNullTo(used) { it.path }
+        scenes.forEach { sc -> sc.slots.mapNotNullTo(used) { it.path } }
+        timbres.mapNotNullTo(used) { it.slot.path }
+        io.execute {
+            val recent = System.currentTimeMillis() - 120_000   // não apaga o que acabou de ser importado
+            fontsDir.listFiles()?.forEach { f ->
+                if (f.name.endsWith(".sf2") && f.absolutePath !in used && f.lastModified() < recent) f.delete()
+            }
+        }
+    }
+
+    // ---------------- presets gerais (cenas) ----------------
+
+    fun saveScene(name: String) {
+        val clean = name.trim().ifEmpty { "Preset ${scenes.size + 1}" }
+        val scene = Scene(
+            clean, System.currentTimeMillis(), slots.map { it.copy(loading = false, error = null) },
+            master, reverb, mappings.toList(),
+        )
+        val idx = scenes.indexOfFirst { it.name.equals(clean, true) }
+        if (idx >= 0) scenes[idx] = scene else scenes.add(scene)
+        persistScenes()
+        currentScene = clean; prefs.edit().putString("currentScene", clean).apply()
+        toast = "Preset \"$clean\" salvo"
+    }
+
+    fun loadScene(scene: Scene) {
+        Engine.nativePanic()
+        for (i in 0 until SLOT_COUNT) loadSlotState(i, scene.slots.getOrElse(i) { SlotState() })
+        setMasterVolume(scene.master)
+        setReverb(scene.reverb)
+        mappings.clear(); mappings.addAll(scene.mappings); saveMappings()
+        currentScene = scene.name; prefs.edit().putString("currentScene", scene.name).apply()
+        toast = "Preset \"${scene.name}\" carregado"
+    }
+
+    fun deleteScene(scene: Scene) {
+        scenes.remove(scene)
+        persistScenes()
+        if (currentScene == scene.name) { currentScene = null; prefs.edit().remove("currentScene").apply() }
+        cleanupFonts()
+    }
+
+    private fun persistScenes() {
+        val json = listToJson(scenes.toList()) { it.toJson() }
+        io.execute { scenesFile.writeText(json) }
+    }
+
+    // ---------------- timbres salvos ----------------
+
+    fun saveTimbre(i: Int, name: String) {
+        val s = slots[i]
+        if (!s.loaded) return
+        val clean = name.trim().ifEmpty { s.presetName }
+        val t = Timbre(clean, System.currentTimeMillis(), s.copy(loading = false, error = null, enabled = true))
+        val idx = timbres.indexOfFirst { it.name.equals(clean, true) }
+        if (idx >= 0) timbres[idx] = t else timbres.add(t)
+        persistTimbres()
+        toast = "Timbre \"$clean\" salvo"
+    }
+
+    fun loadTimbre(i: Int, t: Timbre) {
+        val cur = slots[i]
+        // mantém o que é do canal (faixa de teclas, canal MIDI, mute); traz o som do timbre
+        loadSlotState(i, t.slot.copy(enabled = cur.enabled, lowKey = cur.lowKey, highKey = cur.highKey, channel = cur.channel)
+            .let { if (cur.path == null) it.copy(lowKey = 0, highKey = 127, channel = -1, enabled = true) else it })
+        toast = "Timbre \"${t.name}\" no canal ${i + 1}"
+    }
+
+    fun deleteTimbre(t: Timbre) {
+        timbres.remove(t)
+        persistTimbres()
+        cleanupFonts()
+    }
+
+    private fun persistTimbres() {
+        val json = listToJson(timbres.toList()) { it.toJson() }
+        io.execute { timbresFile.writeText(json) }
     }
 
     private val saveTask = Runnable {
         prefs.edit()
             .putString("slots", slotsToJson(slots))
             .putFloat("masterFader", master)
+            .putString("reverb", reverb.toJson().toString())
             .apply()
     }
 

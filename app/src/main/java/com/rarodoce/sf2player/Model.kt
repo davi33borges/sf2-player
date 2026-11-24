@@ -24,6 +24,7 @@ data class SlotState(
     val eqHigh: Float = 0f,
     val cutoff: Float = 1f,            // 0..1 (1 = aberto)
     val comp: Float = 0f,              // 0..1
+    val reverb: Float = 0.2f,          // envio para o reverb 0..1
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -37,10 +38,11 @@ data class SlotState(
         put("transpose", transpose); put("lowKey", lowKey); put("highKey", highKey); put("channel", channel)
         put("release", release.toDouble()); put("velocity", velocity.toDouble()); put("eqLow", eqLow.toDouble())
         put("eqMid", eqMid.toDouble()); put("eqHigh", eqHigh.toDouble()); put("cutoff", cutoff.toDouble()); put("comp", comp.toDouble())
+        put("reverb", reverb.toDouble())
     }
 
     /** Volta o timbre ao som original do SF2 (mantém arquivo, preset e teclado). */
-    fun resetSound() = copy(release = 0f, velocity = 1f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f)
+    fun resetSound() = copy(release = 0f, velocity = 1f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f, reverb = 0.2f)
 
     companion object {
         fun fromJson(o: JSONObject) = SlotState(
@@ -61,6 +63,7 @@ data class SlotState(
             eqHigh = o.optDouble("eqHigh", 0.0).toFloat(),
             cutoff = o.optDouble("cutoff", 1.0).toFloat(),
             comp = o.optDouble("comp", 0.0).toFloat(),
+            reverb = o.optDouble("reverb", 0.2).toFloat(),
         )
     }
 }
@@ -76,10 +79,12 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     SLOT_EQ_HIGH("Agudo", true),
     SLOT_CUTOFF("Cutoff", true),
     SLOT_COMP("Compressor", true),
+    SLOT_REVERB("Reverb", true),
     SLOT_TOGGLE("Liga/desliga (mute)", false),
     SLOT_PRESET_NEXT("Próximo preset", false),
     SLOT_PRESET_PREV("Preset anterior", false),
     MASTER_VOLUME("Volume geral", true),
+    REVERB_LEVEL("Volume do reverb", true),
     PANIC("Parar todos os sons", false),
 }
 
@@ -140,4 +145,54 @@ fun mappingsFromJson(s: String?): List<Mapping> {
         val a = JSONArray(s)
         (0 until a.length()).mapNotNull { Mapping.fromJson(a.getJSONObject(it)) }
     }.getOrDefault(emptyList())
+}
+
+data class ReverbState(val size: Float = 0.6f, val tone: Float = 0.6f, val level: Float = 0.35f) {
+    fun toJson() = JSONObject().apply { put("size", size.toDouble()); put("tone", tone.toDouble()); put("level", level.toDouble()) }
+    companion object {
+        fun fromJson(o: JSONObject?) = if (o == null) ReverbState() else ReverbState(
+            o.optDouble("size", 0.6).toFloat(), o.optDouble("tone", 0.6).toFloat(), o.optDouble("level", 0.35).toFloat(),
+        )
+    }
+}
+
+/** Preset geral: todos os canais, master, reverb e mapeamentos. */
+data class Scene(
+    val name: String,
+    val savedAt: Long,
+    val slots: List<SlotState>,
+    val master: Float,
+    val reverb: ReverbState,
+    val mappings: List<Mapping>,
+) {
+    val instrumentCount get() = slots.count { it.path != null }
+    fun toJson() = JSONObject().apply {
+        put("name", name); put("savedAt", savedAt); put("master", master.toDouble())
+        put("slots", JSONArray(slotsToJson(slots))); put("reverb", reverb.toJson())
+        put("mappings", JSONArray(mappingsToJson(mappings)))
+    }
+    companion object {
+        fun fromJson(o: JSONObject) = Scene(
+            o.optString("name", "Sem nome"), o.optLong("savedAt"),
+            slotsFromJson(o.optJSONArray("slots")?.toString()),
+            o.optDouble("master", 0.75).toFloat(),
+            ReverbState.fromJson(o.optJSONObject("reverb")),
+            mappingsFromJson(o.optJSONArray("mappings")?.toString()),
+        )
+    }
+}
+
+/** Timbre salvo: um .sf2 com preset e todos os ajustes de som de um canal. */
+data class Timbre(val name: String, val savedAt: Long, val slot: SlotState) {
+    fun toJson() = JSONObject().apply { put("name", name); put("savedAt", savedAt); put("slot", slot.toJson()) }
+    companion object {
+        fun fromJson(o: JSONObject) = Timbre(o.optString("name", "Timbre"), o.optLong("savedAt"), SlotState.fromJson(o.getJSONObject("slot")))
+    }
+}
+
+fun <T> listToJson(items: List<T>, f: (T) -> JSONObject) = JSONArray().apply { items.forEach { put(f(it)) } }.toString()
+fun <T> listFromJson(s: String?, f: (JSONObject) -> T): List<T> {
+    if (s.isNullOrBlank()) return emptyList()
+    return runCatching { val a = JSONArray(s); (0 until a.length()).mapNotNull { runCatching { f(a.getJSONObject(it)) }.getOrNull() } }
+        .getOrDefault(emptyList())
 }

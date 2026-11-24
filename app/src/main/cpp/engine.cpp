@@ -102,6 +102,57 @@ struct Compressor {
     }
 };
 
+/** Reverb estilo Freeverb (8 combs + 4 allpass por lado). */
+struct Comb {
+    std::vector<float> buf; int idx = 0; float store = 0;
+    void init(int n) { buf.assign(std::max(n, 1), 0.f); idx = 0; store = 0; }
+    inline float process(float in, float fb, float damp) {
+        float out = buf[idx];
+        store = out * (1 - damp) + store * damp;
+        buf[idx] = in + store * fb;
+        if (++idx >= (int)buf.size()) idx = 0;
+        return out;
+    }
+};
+struct Allpass {
+    std::vector<float> buf; int idx = 0;
+    void init(int n) { buf.assign(std::max(n, 1), 0.f); idx = 0; }
+    inline float process(float in) {
+        float b = buf[idx];
+        buf[idx] = in + b * 0.5f;
+        if (++idx >= (int)buf.size()) idx = 0;
+        return b - in;
+    }
+};
+struct Reverb {
+    Comb cl[8], cr[8]; Allpass al[4], ar[4];
+    float feedback = 0.84f, damp = 0.3f, level = 0.35f;
+    void init(float sr) {
+        static const int combs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+        static const int aps[4] = {556, 441, 341, 225};
+        float k = sr / 44100.f;
+        for (int i = 0; i < 8; ++i) { cl[i].init((int)(combs[i] * k)); cr[i].init((int)((combs[i] + 23) * k)); }
+        for (int i = 0; i < 4; ++i) { al[i].init((int)(aps[i] * k)); ar[i].init((int)((aps[i] + 23) * k)); }
+    }
+    /** size 0..1, tone 0..1 (1 = brilhante), level 0..1 */
+    void set(float size, float tone, float lvl) {
+        feedback = 0.7f + 0.28f * size;
+        damp = 0.05f + 0.6f * (1.f - tone);
+        level = lvl;
+    }
+    /** in = envio mono para o reverb; soma o resultado em out (estéreo intercalado) */
+    void process(const float* in, float* out, int frames) {
+        if (level < 0.001f) return;
+        for (int i = 0; i < frames; ++i) {
+            float x = in[i] * 0.015f, l = 0, r = 0;
+            for (int c = 0; c < 8; ++c) { l += cl[c].process(x, feedback, damp); r += cr[c].process(x, feedback, damp); }
+            for (int a = 0; a < 4; ++a) { l = al[a].process(l); r = ar[a].process(r); }
+            out[i * 2] += l * level * 3.f;
+            out[i * 2 + 1] += r * level * 3.f;
+        }
+    }
+};
+
 // ------------------------------------------------------------------ canais
 
 struct Slot {
@@ -113,6 +164,7 @@ struct Slot {
     float releaseMul = 1.f;    // multiplica o release do SF2
     float velSens = 1.f;       // 0 = velocity fixa, 1 = resposta total
     float eqLow = 0, eqMid = 0, eqHigh = 0, cutoff = 20000.f, comp = 0;
+    float reverbSend = 0;
     Biquad lp, low, mid, high;
     Compressor compressor;
     int8_t active[128];
@@ -135,14 +187,17 @@ public:
     std::mutex lock;
     Slot slots[kSlots];
     std::vector<Event> pending, processing;
-    std::vector<float> tmp;
+    std::vector<float> tmp, revIn;
+    Reverb reverb;
+    float revSize = 0.6f, revTone = 0.6f, revLevel = 0.35f;
     float master = 0.9f;
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
     std::atomic<float> peaks[kSlots + 1];
 
     Engine() {
-        pending.reserve(1024); processing.reserve(1024); tmp.resize(kChunk * 2);
+        pending.reserve(1024); processing.reserve(1024); tmp.resize(kChunk * 2); revIn.resize(kChunk);
+        reverb.init(48000.f); reverb.set(revSize, revTone, revLevel);
         for (auto& p : peaks) p.store(0.f);
     }
 
@@ -162,6 +217,8 @@ public:
         {
             std::lock_guard<std::mutex> g(lock);
             sampleRate = stream->getSampleRate();
+            reverb.init((float)sampleRate);
+            reverb.set(revSize, revTone, revLevel);
             for (auto& s : slots) {
                 if (s.font) tsf_set_output(s.font, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
                 s.updateDsp((float)sampleRate);
@@ -265,6 +322,7 @@ public:
         for (int done = 0; done < frames; done += kChunk) {
             int n = std::min(kChunk, frames - done);
             float* dst = out + done * 2;
+            std::memset(revIn.data(), 0, sizeof(float) * n);
             for (int si = 0; si < kSlots; ++si) {
                 Slot& s = slots[si];
                 if (!s.font) continue;
@@ -285,7 +343,12 @@ public:
                 }
                 s.curGain = g1;
                 peakOf(t, n * 2, slotPeak[si]);
+                if (s.reverbSend > 0.001f) {
+                    const float snd = s.reverbSend;
+                    for (int i = 0; i < n; ++i) revIn[i] += (t[i * 2] + t[i * 2 + 1]) * snd;
+                }
             }
+            reverb.process(revIn.data(), dst, n);   // sempre: mantém a cauda soando depois do envio
         }
         for (int si = 0; si < kSlots; ++si) storePeak(si, slotPeak[si]);
 
@@ -379,14 +442,14 @@ Java_com_rarodoce_sf2player_Engine_nativeUnload(JNIEnv*, jobject, jint idx) {
     if (old) tsf_close(old);
 }
 
-// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor]
+// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb]
 JNIEXPORT void JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx, jboolean enabled, jint preset,
         jint transpose, jint lowKey, jint highKey, jint channel, jfloatArray jp) {
     Slot* s = slotAt(idx);
-    if (!s || env->GetArrayLength(jp) < 9) return;
-    float p[9];
-    env->GetFloatArrayRegion(jp, 0, 9, p);
+    if (!s || env->GetArrayLength(jp) < 10) return;
+    float p[10];
+    env->GetFloatArrayRegion(jp, 0, 10, p);
 
     std::lock_guard<std::mutex> g(gEngine->lock);
     bool wasEnabled = s->enabled;
@@ -400,6 +463,7 @@ Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx,
     s->eqHigh = std::clamp(p[6], -15.f, 15.f);
     s->cutoff = std::clamp(p[7], 40.f, 20000.f);
     s->comp = std::clamp(p[8], 0.f, 1.f);
+    s->reverbSend = std::clamp(p[9], 0.f, 1.f);
     s->transpose = std::clamp((int)transpose, -48, 48);
     s->lowKey = std::clamp((int)lowKey, 0, 127);
     s->highKey = std::clamp((int)highKey, 0, 127);
@@ -424,6 +488,16 @@ Java_com_rarodoce_sf2player_Engine_nativeSetMaster(JNIEnv*, jobject, jfloat v) {
     if (!gEngine) return;
     std::lock_guard<std::mutex> g(gEngine->lock);
     gEngine->master = std::clamp((float)v, 0.0f, 4.f);
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeSetReverb(JNIEnv*, jobject, jfloat size, jfloat tone, jfloat level) {
+    if (!gEngine) return;
+    std::lock_guard<std::mutex> g(gEngine->lock);
+    gEngine->revSize = std::clamp((float)size, 0.f, 1.f);
+    gEngine->revTone = std::clamp((float)tone, 0.f, 1.f);
+    gEngine->revLevel = std::clamp((float)level, 0.f, 1.f);
+    gEngine->reverb.set(gEngine->revSize, gEngine->revTone, gEngine->revLevel);
 }
 
 /** Lê e zera os picos: 8 canais + master. */

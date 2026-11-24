@@ -1,6 +1,7 @@
 package com.rarodoce.sf2player.ui
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -11,6 +12,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -39,6 +41,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Piano
@@ -48,6 +52,9 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,11 +85,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.rarodoce.sf2player.LearnMode
 import com.rarodoce.sf2player.MainViewModel
 import com.rarodoce.sf2player.SLOT_COUNT
+import com.rarodoce.sf2player.Scene
+import com.rarodoce.sf2player.Timbre
 import com.rarodoce.sf2player.SlotState
 import com.rarodoce.sf2player.Target
 import com.rarodoce.sf2player.TargetType
@@ -99,6 +106,8 @@ fun MainScreen(vm: MainViewModel) {
     var showMidi by remember { mutableStateOf(false) }
     var pickSlot by remember { mutableIntStateOf(-1) }
     var configSlot by remember { mutableIntStateOf(-1) }
+    var showScenes by remember { mutableStateOf(false) }
+    var showReverb by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null && pickSlot >= 0) vm.importFont(pickSlot, uri)
@@ -112,25 +121,31 @@ fun MainScreen(vm: MainViewModel) {
 
     Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         Column(Modifier.fillMaxSize()) {
-            TopBar(vm, onMidi = { showMidi = true })
+            TopBar(vm, onMidi = { showMidi = true }, onScenes = { showScenes = true })
             AnimatedVisibility(visible = vm.learn != null) { LearnBanner(vm) }
-            Mixer(vm, Modifier.weight(1f), onConfig = { configSlot = it }, onPick = pick)
+            Box(Modifier.weight(1f)) {
+                Mixer(vm, Modifier.fillMaxSize(), onConfig = { configSlot = it }, onPick = pick, onMaster = { showReverb = true })
+                // painel de timbre por cima da mesa (fica sempre dentro da tela)
+                if (configSlot >= 0) {
+                    val i = configSlot
+                    BackHandler { configSlot = -1 }
+                    if (vm.slots[i].loaded || vm.slots[i].loading) ChannelConfig(vm, i, onClose = { configSlot = -1 }, onPick = { pick(i) })
+                    else LaunchedEffect(i) { configSlot = -1 }
+                }
+            }
         }
         SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(12.dp))
     }
 
     if (showMidi) MidiDialog(vm) { showMidi = false }
-    if (configSlot >= 0) {
-        val i = configSlot
-        if (vm.slots[i].loaded) ChannelConfig(vm, i, onClose = { configSlot = -1 }, onPick = { pick(i) })
-        else LaunchedEffect(i) { configSlot = -1 }
-    }
+    if (showScenes) ScenesDialog(vm) { showScenes = false }
+    if (showReverb) ReverbDialog(vm) { showReverb = false }
 }
 
 // ------------------------------------------------------------------ barra do topo
 
 @Composable
-private fun TopBar(vm: MainViewModel, onMidi: () -> Unit) {
+private fun TopBar(vm: MainViewModel, onMidi: () -> Unit, onScenes: () -> Unit) {
     var lit by remember { mutableStateOf(false) }
     LaunchedEffect(vm.activity) { if (vm.activity != 0L) { lit = true; delay(90); lit = false } }
     val led by animateColorAsState(if (lit) Accent else if (vm.connected != null) Ok else InkDim, tween(80), label = "led")
@@ -148,6 +163,17 @@ private fun TopBar(vm: MainViewModel, onMidi: () -> Unit) {
             color = if (vm.audioOk) InkDim else Color(0xFFFF5C5C), fontSize = 12.sp, fontFamily = Mono,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
+        Row(
+            Modifier.clip(RoundedCornerShape(50)).background(Accent.copy(alpha = 0.14f)).border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(50))
+                .clickable(onClick = onScenes).padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 220.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.LibraryMusic, null, tint = Accent, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(vm.currentScene ?: "Presets", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(8.dp))
         Row(
             Modifier.clip(RoundedCornerShape(50)).background(Panel).border(1.dp, Line, RoundedCornerShape(50))
                 .clickable(onClick = onMidi).padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 240.dp),
@@ -189,8 +215,8 @@ private fun LearnBanner(vm: MainViewModel) {
 // ------------------------------------------------------------------ mesa
 
 @Composable
-private fun Mixer(vm: MainViewModel, modifier: Modifier, onConfig: (Int) -> Unit, onPick: (Int) -> Unit) {
-    BoxWithConstraints(modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp)) {
+private fun Mixer(vm: MainViewModel, modifier: Modifier, onConfig: (Int) -> Unit, onPick: (Int) -> Unit, onMaster: () -> Unit) {
+    BoxWithConstraints(modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp)) {
         val masterW = 88.dp
         val gap = 6.dp
         val stripW = maxOf(84.dp, (maxWidth - masterW - gap * SLOT_COUNT - 4.dp) / SLOT_COUNT)
@@ -204,7 +230,7 @@ private fun Mixer(vm: MainViewModel, modifier: Modifier, onConfig: (Int) -> Unit
                 }
             }
             Spacer(Modifier.width(gap))
-            MasterStrip(vm, Modifier.width(masterW).fillMaxHeight())
+            MasterStrip(vm, Modifier.width(masterW).fillMaxHeight(), onMaster)
         }
     }
 }
@@ -259,6 +285,7 @@ private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modi
                 modifier = Modifier.weight(1f).fillMaxWidth(), enabled = s.loaded,
             )
             Text(if (s.loaded) faderDb(s.volume) else "", color = Ink, fontSize = 10.sp, fontFamily = Mono)
+            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_VOLUME, i), color, Modifier.padding(top = 2.dp))
         }
 
         Row(
@@ -269,19 +296,30 @@ private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modi
                 if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Color(0xFFFF5C5C),
                 Modifier.weight(1f), filled = s.loaded && s.enabled,
             ) { if (s.loaded) vm.update(i) { it.copy(enabled = !it.enabled) } }
-            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_VOLUME, i), color, Modifier.weight(1f))
+            // botão do teclado que liga/desliga este timbre
+            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_TOGGLE, i), if (s.enabled) color else Color(0xFFFF5C5C), Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun MasterStrip(vm: MainViewModel, modifier: Modifier) {
+private fun MasterStrip(vm: MainViewModel, modifier: Modifier, onMaster: () -> Unit) {
     Column(
         modifier.clip(RoundedCornerShape(12.dp)).background(PanelHi).border(1.dp, Line, RoundedCornerShape(12.dp)),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("MASTER", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.5.sp,
-            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+        Column(
+            Modifier.fillMaxWidth().clickable(onClick = onMaster).padding(top = 6.dp, bottom = 2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("MASTER", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.sp)
+                Spacer(Modifier.width(3.dp))
+                Icon(Icons.Rounded.Tune, "Reverb", tint = Ink.copy(alpha = 0.7f), modifier = Modifier.size(12.dp))
+            }
+            Knob(vm.reverb.level, { v -> vm.setReverb(vm.reverb.copy(level = v)) }, Color(0xFF8FB8FF), size = 30.dp, default = 0.35f)
+            Text("REV ${(vm.reverb.level * 100).roundToInt()}%", color = InkDim, fontSize = 9.sp, fontFamily = Mono)
+        }
         VerticalFader(
             vm.master, vm::setMasterVolume, Ink, level = { vm.meters[SLOT_COUNT] },
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 6.dp),
@@ -304,36 +342,73 @@ private fun dbLabel(db: Float) = (if (db > 0.05f) "+" else "") + "%.1f dB".forma
 private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick: () -> Unit) {
     val s = vm.slots[i]
     val color = SlotColors[i]
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.fillMaxSize().padding(10.dp).clip(RoundedCornerShape(16.dp)).background(Panel)
-                .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().background(color.copy(alpha = 0.14f)).padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(color), contentAlignment = Alignment.Center) {
-                    Text("${i + 1}", color = Bg, fontWeight = FontWeight.Black, fontFamily = Mono)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(s.displayName, color = Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Timbre e configurações do canal", color = InkDim, fontSize = 11.sp)
-                }
-                SmallButton("Trocar .sf2", Ink) { onClose(); onPick() }
-                Spacer(Modifier.width(6.dp))
-                SmallButton("Remover", Color(0xFFFF5C5C)) { onClose(); vm.removeFont(i) }
-                IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Fechar", tint = Ink) }
-            }
+    var menu by remember { mutableStateOf(false) }
+    var saveTimbre by remember { mutableStateOf(false) }
+    var listTimbres by remember { mutableStateOf(false) }
 
-            Row(Modifier.weight(1f).fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PresetColumn(vm, i, s, color, Modifier.weight(1f).fillMaxHeight())
-                SoundColumn(vm, i, s, color, Modifier.weight(1.5f).fillMaxHeight())
-                KeyboardColumn(vm, i, s, color, Modifier.weight(1.15f).fillMaxHeight())
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(14.dp)).background(Panel)
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            // bloqueia toques na mesa que está por baixo
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+    ) {
+        Row(
+            Modifier.fillMaxWidth().background(color.copy(alpha = 0.14f)).padding(start = 12.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(color), contentAlignment = Alignment.Center) {
+                Text("${i + 1}", color = Bg, fontWeight = FontWeight.Black, fontFamily = Mono)
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(s.displayName.ifEmpty { "Carregando…" }, color = Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(s.presetName, color = InkDim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            // liga/desliga + mapeamento no teclado
+            SmallButton(if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Color(0xFFFF5C5C), filled = s.enabled) {
+                vm.update(i) { it.copy(enabled = !it.enabled) }
+            }
+            Spacer(Modifier.width(4.dp))
+            LearnChip(vm, Target(TargetType.SLOT_TOGGLE, i), color)
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "Mais opções", tint = Ink) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text("Salvar este timbre…") }, onClick = { menu = false; saveTimbre = true })
+                    DropdownMenuItem(text = { Text("Carregar timbre salvo…") }, onClick = { menu = false; listTimbres = true })
+                    DropdownMenuItem(text = { Text("Trocar arquivo .sf2") }, onClick = { menu = false; onClose(); onPick() })
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("Remover instrumento", color = Color(0xFFFF5C5C)) },
+                        onClick = { menu = false; onClose(); vm.removeFont(i) })
+                }
+            }
+            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Fechar", tint = Ink) }
+        }
+
+        // 3 colunas; se a tela for estreita, rolam para o lado em vez de cortar
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(8.dp)) {
+            val wPreset = 220.dp; val wSound = 400.dp; val wKeys = 300.dp; val gap = 8.dp
+            if (maxWidth >= wPreset + wSound + wKeys + gap * 2) {
+                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    PresetColumn(vm, i, s, color, Modifier.weight(1f).fillMaxHeight())
+                    SoundColumn(vm, i, s, color, Modifier.weight(1.6f).fillMaxHeight())
+                    KeyboardColumn(vm, i, s, color, Modifier.weight(1.2f).fillMaxHeight())
+                }
+            } else {
+                Row(Modifier.fillMaxSize().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    PresetColumn(vm, i, s, color, Modifier.width(wPreset).fillMaxHeight())
+                    SoundColumn(vm, i, s, color, Modifier.width(wSound).fillMaxHeight())
+                    KeyboardColumn(vm, i, s, color, Modifier.width(wKeys).fillMaxHeight())
+                }
             }
         }
     }
+
+    if (saveTimbre) NameDialog(
+        title = "Salvar timbre", hint = "Ex.: Piano do culto", initial = s.presetName,
+        info = "Guarda o arquivo .sf2, o preset e todos os ajustes de som deste canal.",
+        onDismiss = { saveTimbre = false },
+    ) { name -> vm.saveTimbre(i, name); saveTimbre = false }
+    if (listTimbres) TimbresDialog(vm, i) { listTimbres = false }
 }
 
 @Composable
@@ -341,7 +416,7 @@ private fun PresetColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, 
     var query by remember { mutableStateOf("") }
     val list = s.presets.withIndex().filter { query.isBlank() || it.value.contains(query, true) }
     Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp)) {
-        SectionTitle("PRESET · ${s.preset + 1}/${s.presets.size}")
+        SectionTitle(if (s.loaded) "PRESET · ${s.preset + 1}/${s.presets.size}" else "PRESET")
         Row(
             Modifier.padding(vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(PanelHi)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -408,9 +483,16 @@ private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, m
                 color, Target(TargetType.SLOT_EQ_MID, i), bipolar = true)
             KnobCell(vm, "Agudo", dbLabel(s.eqHigh), (s.eqHigh + 12) / 24, { v -> upd { it.copy(eqHigh = v * 24 - 12) } },
                 color, Target(TargetType.SLOT_EQ_HIGH, i), bipolar = true)
+        }
+        HorizontalDivider(color = Line, modifier = Modifier.padding(vertical = 6.dp))
+        SectionTitle("ESPAÇO")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Reverb", "${(s.reverb * 100).roundToInt()}%", s.reverb, { v -> upd { it.copy(reverb = v) } },
+                color, Target(TargetType.SLOT_REVERB, i), default = 0.2f)
             KnobCell(vm, "Pan", panLabel(s.pan), s.pan, { v -> upd { it.copy(pan = v) } },
                 color, Target(TargetType.SLOT_PAN, i), bipolar = true)
         }
+        Text("O reverb deste canal vai para o reverb geral; tamanho e tom ficam no MASTER.", color = InkDim, fontSize = 10.sp)
     }
 }
 
@@ -453,7 +535,7 @@ private fun KeyboardColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color
 
         SectionTitle("CONTROLES DO TECLADO", Modifier.padding(top = 12.dp))
         Text("Toque em MIDI e mexa o controle. Segure para apagar.", color = InkDim, fontSize = 10.sp)
-        for ((label, t) in listOf("Fader" to TargetType.SLOT_VOLUME, "Liga/desliga (mute)" to TargetType.SLOT_TOGGLE)) {
+        for ((label, t) in listOf("Fader (volume)" to TargetType.SLOT_VOLUME, "Liga/desliga o timbre" to TargetType.SLOT_TOGGLE)) {
             Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, color = Ink, fontSize = 13.sp, modifier = Modifier.weight(1f))
                 LearnChip(vm, Target(t, i), color)
@@ -509,6 +591,147 @@ private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
                 }
                 item {
                     TextButton(onClick = { onClose(); vm.startLearn(Target(TargetType.PANIC)) }) { Text("Mapear botão \"parar todos os sons\"") }
+                }
+            }
+        },
+    )
+}
+
+// ------------------------------------------------------------------ reverb, presets e timbres
+
+@Composable
+private fun ReverbDialog(vm: MainViewModel, onClose: () -> Unit) {
+    val r = vm.reverb
+    val c = Color(0xFF8FB8FF)
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
+        title = { Text("Reverb geral") },
+        text = {
+            Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.setReverb(vm.reverb.copy(size = v)) },
+                        c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
+                    KnobCell(vm, "Tom", if (r.tone < 0.35f) "Escuro" else if (r.tone > 0.7f) "Brilhante" else "Médio", r.tone,
+                        { v -> vm.setReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
+                    KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.setReverb(vm.reverb.copy(level = v)) },
+                        c, Target(TargetType.REVERB_LEVEL), default = 0.35f)
+                }
+                Text("Quanto cada instrumento manda para o reverb é ajustado no knob Reverb de cada canal.",
+                    color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+    )
+}
+
+@Composable
+private fun NameDialog(title: String, hint: String, initial: String, info: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = { onSave(name) }) { Text("Salvar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(name, { name = it }, singleLine = true, placeholder = { Text(hint) }, modifier = Modifier.fillMaxWidth())
+                Text(info, color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+    )
+}
+
+private fun dateLabel(t: Long) = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale("pt", "BR")).format(java.util.Date(t))
+
+@Composable
+private fun ScenesDialog(vm: MainViewModel, onClose: () -> Unit) {
+    var saving by remember { mutableStateOf(false) }
+    var confirmLoad by remember { mutableStateOf<Scene?>(null) }
+    var confirmDelete by remember { mutableStateOf<Scene?>(null) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
+        dismissButton = { TextButton(onClick = { saving = true }) { Text("Salvar configuração atual") } },
+        title = { Text("Presets gerais") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                item {
+                    Text(
+                        "Um preset guarda os 8 canais (arquivos .sf2, timbres e ajustes), o master, o reverb e os controles mapeados. " +
+                            "O app também abre sempre com a última configuração usada.",
+                        color = InkDim, fontSize = 12.sp, modifier = Modifier.padding(bottom = 10.dp),
+                    )
+                    if (vm.scenes.isEmpty()) Text("Nenhum preset salvo ainda.", color = Ink, fontSize = 14.sp)
+                }
+                itemsIndexed(vm.scenes.toList()) { _, sc ->
+                    val current = sc.name == vm.currentScene
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(10.dp))
+                            .background(if (current) Accent.copy(alpha = 0.14f) else PanelHi)
+                            .clickable { confirmLoad = sc }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(sc.name, color = if (current) Accent else Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${sc.instrumentCount} instrumentos · ${dateLabel(sc.savedAt)}", color = InkDim, fontSize = 11.sp)
+                        }
+                        SmallButton("Carregar", Accent) { confirmLoad = sc }
+                        IconButton(onClick = { confirmDelete = sc }) { Icon(Icons.Rounded.Delete, "Apagar", tint = InkDim) }
+                    }
+                }
+            }
+        },
+    )
+    if (saving) NameDialog(
+        title = "Salvar preset geral", hint = "Ex.: Culto domingo", initial = vm.currentScene ?: "",
+        info = "Se já existir um preset com esse nome, ele será atualizado.",
+        onDismiss = { saving = false },
+    ) { name -> vm.saveScene(name); saving = false }
+    confirmLoad?.let { sc ->
+        AlertDialog(
+            onDismissRequest = { confirmLoad = null },
+            confirmButton = { TextButton(onClick = { vm.loadScene(sc); confirmLoad = null; onClose() }) { Text("Carregar") } },
+            dismissButton = { TextButton(onClick = { confirmLoad = null }) { Text("Cancelar") } },
+            title = { Text("Carregar \"${sc.name}\"?") },
+            text = { Text("A configuração atual da mesa será substituída. Se quiser guardá-la, salve antes como um preset.") },
+        )
+    }
+    confirmDelete?.let { sc ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            confirmButton = { TextButton(onClick = { vm.deleteScene(sc); confirmDelete = null }) { Text("Apagar", color = Color(0xFFFF5C5C)) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancelar") } },
+            title = { Text("Apagar \"${sc.name}\"?") },
+            text = { Text("Esse preset geral será apagado.") },
+        )
+    }
+}
+
+@Composable
+private fun TimbresDialog(vm: MainViewModel, i: Int, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Fechar") } },
+        title = { Text("Timbres salvos → canal ${i + 1}") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                item {
+                    if (vm.timbres.isEmpty()) Text("Nenhum timbre salvo. Use \"Salvar este timbre\" no menu ⋮ de um canal.",
+                        color = Ink, fontSize = 14.sp)
+                }
+                itemsIndexed(vm.timbres.toList()) { _, t ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(10.dp)).background(PanelHi)
+                            .clickable { vm.loadTimbre(i, t); onClose() }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(t.name, color = Ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${t.slot.displayName} · ${dateLabel(t.savedAt)}", color = InkDim, fontSize = 11.sp, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                        }
+                        IconButton(onClick = { vm.deleteTimbre(t) }) { Icon(Icons.Rounded.Delete, "Apagar", tint = InkDim) }
+                    }
                 }
             }
         },

@@ -6,7 +6,11 @@ App Android que transforma o celular ou tablet num módulo de som para teclado M
 - Interface de **mesa de som** (celular deitado): 8 canais com fader, pan, mute e medidor + master
 - Até **8 instrumentos** ao mesmo tempo, em camadas ou divididos pelo teclado (split)
 - Toque no nome do canal para configurar o timbre: preset, **release, velocity, cutoff, compressor,
-  grave, médio, agudo**, pan, faixa de teclas, transposição e canal MIDI
+  grave, médio, agudo, reverb**, pan, faixa de teclas, transposição e canal MIDI
+- **Reverb geral** (toque em MASTER): tamanho, tom e volume
+- **Presets gerais**: salve a mesa inteira (todos os .sf2, timbres, master, reverb e mapeamentos) com um nome
+  e carregue em um toque, por exemplo antes de um evento
+- **Timbres salvos**: guarde o som de um canal (.sf2 + preset + ajustes) e use em qualquer canal
 - **MIDI learn**: toque em "MIDI" ao lado de um controle e mexa o fader/knob/botão/pad do teclado
 - Faixa de teclas pelo próprio teclado: "Tocar p/ definir" → nota mais grave → nota mais aguda
 - Botão vermelho no topo para parar todos os sons
