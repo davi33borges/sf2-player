@@ -130,26 +130,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- aprendizado ----------------
 
-    fun startLearn(target: Target) = setLearn(LearnMode.Control(target))
-    fun startRangeLearn(slot: Int) = setLearn(LearnMode.KeyRange(slot))
-    fun cancelLearn() = setLearn(null)
+    fun startLearn(target: Target) = changeLearn(LearnMode.Control(target))
+    fun startRangeLearn(slot: Int) = changeLearn(LearnMode.KeyRange(slot))
+    fun cancelLearn() = changeLearn(null)
 
-    private fun setLearn(l: LearnMode?) { learn = l; learnSnapshot = l }
+    private fun changeLearn(l: LearnMode?) { learn = l; learnSnapshot = l }
 
     private fun finishLearn(m: Mapping) {
         // um controle físico faz uma coisa só; e cada função tem um controle só
         mappings.removeAll { (it.kind == m.kind && it.channel == m.channel && it.number == m.number) || it.target == m.target }
         mappings.add(m)
         saveMappings()
-        setLearn(null)
+        changeLearn(null)
         toast = "${m.target.describe()} → ${m.shortLabel()}"
     }
 
     private fun learnRangeKey(l: LearnMode.KeyRange, note: Int) {
-        if (l.low == null) { setLearn(l.copy(low = note)); return }
+        if (l.low == null) { changeLearn(l.copy(low = note)); return }
         val lo = minOf(l.low, note); val hi = maxOf(l.low, note)
         update(l.slot) { it.copy(lowKey = lo, highKey = hi) }
-        setLearn(null)
+        changeLearn(null)
         toast = "Instrumento ${l.slot + 1}: ${noteName(lo)} a ${noteName(hi)}"
     }
 
