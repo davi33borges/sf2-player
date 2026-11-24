@@ -12,10 +12,25 @@ android {
         applicationId = "com.rarodoce.sf2player"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // cada build do GitHub tem um número maior: o Android aceita instalar por cima
+        val build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = 100 + build
+        versionName = "1.$build"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+    }
+
+    // chave fixa (secrets do GitHub): todas as versões saem com a mesma assinatura
+    val ksFile = System.getenv("KEYSTORE_FILE")?.let { file(it) }
+    signingConfigs {
+        if (ksFile != null && ksFile.exists()) {
+            create("release") {
+                storeFile = ksFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = "sf2player"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -25,7 +40,7 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
