@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- classe USB Audio (1), subclasse MIDI Streaming (3) -->
+    <usb-device class="1" subclass="3" />
+    <!-- Novation / Focusrite -->
+    <usb-device vendor-id="4661" />
+</resources>
