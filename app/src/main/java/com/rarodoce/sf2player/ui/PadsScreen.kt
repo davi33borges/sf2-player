@@ -155,7 +155,7 @@ private fun PadTile(
                 detectTapGestures(
                     onPress = {
                         when {
-                            editing && p.loaded -> onConfig()
+                            editing -> Unit   // no modo editar, usa os botões do próprio pad
                             !p.loaded -> if (!p.loading) onPick()
                             else -> {
                                 vm.padDown(i)
@@ -171,7 +171,10 @@ private fun PadTile(
     ) {
         when {
             p.loading -> CircularProgressIndicator(color = Ink, strokeWidth = 2.dp, modifier = Modifier.align(Alignment.Center).size(24.dp))
-            !p.loaded -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+            !p.loaded -> Column(
+                Modifier.align(Alignment.Center).clip(RoundedCornerShape(12.dp)).clickable(enabled = editing, onClick = onPick).padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Icon(Icons.Rounded.Add, null, tint = InkDim, modifier = Modifier.size(26.dp))
                 Text(p.error ?: "Adicionar sample", color = if (p.error != null) Danger else InkDim, fontSize = 11.sp)
             }
@@ -180,7 +183,7 @@ private fun PadTile(
                 Row(Modifier.align(Alignment.TopEnd), verticalAlignment = Alignment.CenterVertically) {
                     if (p.mode == 2) Icon(Icons.Rounded.Loop, "Loop", tint = Color.White, modifier = Modifier.size(16.dp))
                     if (p.mode == 1) Icon(Icons.Rounded.TouchApp, "Enquanto segura", tint = Color.White, modifier = Modifier.size(16.dp))
-                    if (mapping != null) {
+                    if (mapping != null && !editing) {
                         Spacer(Modifier.width(4.dp))
                         Text(mapping.shortLabel(), color = Color.White, fontSize = 10.sp, fontFamily = Mono, fontWeight = FontWeight.Bold,
                             modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.22f)).padding(horizontal = 5.dp, vertical = 1.dp))
@@ -189,12 +192,19 @@ private fun PadTile(
                 Text("${i + 1}", color = Color.White.copy(alpha = 0.75f), fontWeight = FontWeight.Black, fontSize = 13.sp,
                     modifier = Modifier.align(Alignment.TopStart))
                 Text(p.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart))
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(if (editing) Alignment.TopStart else Alignment.BottomStart).padding(top = if (editing) 18.dp else 0.dp))
             }
         }
-        if (editing && p.loaded) {
-            Text("editar", color = Bg, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.BottomEnd).clip(RoundedCornerShape(6.dp)).background(Color.White).padding(horizontal = 6.dp, vertical = 2.dp))
+        if (editing) {
+            // modo editar: mapear direto no pad, sem abrir as configurações
+            Row(Modifier.align(Alignment.BottomEnd), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                LearnChip(vm, Target(TargetType.PAD_TRIGGER, i), Color.White,
+                    Modifier.clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.3f)))
+                if (p.loaded) Text("editar", color = Bg, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Color.White).clickable(onClick = onConfig)
+                        .padding(horizontal = 8.dp, vertical = 4.dp))
+            }
         }
     }
 }
