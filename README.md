@@ -1,4 +1,6 @@
-# SF2 Player
+# SonarKeys
+
+*Tudo em um lugar só.*
 
 App Android que transforma o celular ou tablet num módulo de som para teclado MIDI
 (feito pensando no Novation Launchkey 61 MK4). Lê arquivos **.sf2** (SoundFont).

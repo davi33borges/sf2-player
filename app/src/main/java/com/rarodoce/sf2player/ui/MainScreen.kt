@@ -159,9 +159,9 @@ private fun TopBar(vm: MainViewModel, tab: Int, onTab: (Int) -> Unit, onMidi: ()
         Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Rounded.Piano, null, tint = Ink, modifier = Modifier.size(22.dp))
+        LogoMark(Modifier.size(26.dp))
         Spacer(Modifier.width(8.dp))
-        Text("SF2 Player", fontWeight = FontWeight.Black, fontSize = 17.sp, color = Ink)
+        Text("SonarKeys", fontWeight = FontWeight.Black, fontSize = 17.sp, color = Ink)
         Spacer(Modifier.width(14.dp))
         // abas: mesa de som e pads
         Row(

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo SonarKeys: 4 pads com o teclado embaixo (dentro da área segura de 66dp) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#E6FFFFFF" android:pathData="M35,29 h14 a4,4 0 0 1 4,4 v11 a4,4 0 0 1 -4,4 h-14 a4,4 0 0 1 -4,-4 v-11 a4,4 0 0 1 4,-4 z" />
+    <path android:fillColor="#FF4FD1FF" android:pathData="M60,29 h14 a4,4 0 0 1 4,4 v11 a4,4 0 0 1 -4,4 h-14 a4,4 0 0 1 -4,-4 v-11 a4,4 0 0 1 4,-4 z" />
+    <path android:fillColor="#73FFFFFF" android:pathData="M35,51 h14 a4,4 0 0 1 4,4 v11 a4,4 0 0 1 -4,4 h-14 a4,4 0 0 1 -4,-4 v-11 a4,4 0 0 1 4,-4 z" />
+    <path android:fillColor="#73FFFFFF" android:pathData="M60,51 h14 a4,4 0 0 1 4,4 v11 a4,4 0 0 1 -4,4 h-14 a4,4 0 0 1 -4,-4 v-11 a4,4 0 0 1 4,-4 z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M33,73 h43 a2,2 0 0 1 2,2 v7 a2,2 0 0 1 -2,2 h-43 a2,2 0 0 1 -2,-2 v-7 a2,2 0 0 1 2,-2 z" />
+    <path android:fillColor="#FF2A5BB5" android:pathData="M37,73h3v6.5h-3zM44,73h3v6.5h-3zM55,73h3v6.5h-3zM62,73h3v6.5h-3zM69,73h3v6.5h-3z" />
+</vector>

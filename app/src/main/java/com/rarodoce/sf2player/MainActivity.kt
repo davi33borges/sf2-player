@@ -10,6 +10,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.rarodoce.sf2player.ui.AppTheme
 import com.rarodoce.sf2player.ui.MainScreen
+import com.rarodoce.sf2player.ui.SplashScreen
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -23,6 +29,15 @@ class MainActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        setContent { AppTheme { MainScreen(vm) } }
+        setContent {
+            AppTheme {
+                // a abertura aparece só ao abrir o app, não ao girar a tela
+                var splash by rememberSaveable { mutableStateOf(savedInstanceState == null) }
+                Box {
+                    MainScreen(vm)
+                    if (splash) SplashScreen(onDone = { splash = false })
+                }
+            }
+        }
     }
 }
