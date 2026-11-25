@@ -244,8 +244,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for (i in meterBuf.indices) {
             val peak = meterBuf[i].coerceIn(0f, 2f)
             val shown = meters[i]
-            val next = if (peak > shown) peak else shown * 0.88f
-            if (kotlin.math.abs(next - shown) > 0.002f || (next == 0f && shown != 0f)) meters[i] = if (next < 0.002f) 0f else next
+            // sobe na hora e desce suave até zerar de verdade (abaixo de -60 dB vira 0)
+            var next = if (peak > shown) peak else shown * 0.88f
+            if (next < 0.001f) next = 0f
+            if (next != shown) meters[i] = next
         }
         Engine.nativePadStates(padStateBuf)
         for (i in 0 until PAD_COUNT) { val on = padStateBuf[i] == 1; if (padPlaying[i] != on) padPlaying[i] = on }
