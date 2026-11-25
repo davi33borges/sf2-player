@@ -116,7 +116,7 @@ private fun PadsSide(vm: MainViewModel, editing: Boolean, onEdit: () -> Unit, mo
     ) {
         Text("PADS", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, letterSpacing = 1.5.sp)
         VerticalFader(
-            vm.padsVolume, vm::setPadsVolume, Color.White, level = { vm.meters[SLOT_COUNT] },
+            vm.padsVolume, vm::changePadsVolume, Color.White, level = { vm.meters[SLOT_COUNT] },
             modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 4.dp),
         )
         Text(faderDb(vm.padsVolume), color = Ink, fontSize = 10.sp, fontFamily = Mono)

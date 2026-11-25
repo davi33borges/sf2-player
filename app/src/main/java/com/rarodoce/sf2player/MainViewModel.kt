@@ -405,7 +405,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (scene.pads.isNotEmpty()) {
             Engine.nativePadsStop()
             for (i in 0 until PAD_COUNT) loadPadState(i, scene.pads.getOrElse(i) { PadState(color = i) })
-            setPadsVolume(scene.padsVolume)
+            changePadsVolume(scene.padsVolume)
         }
         mappings.clear(); mappings.addAll(scene.mappings); saveMappings()
         currentScene = scene.name; prefs.edit().putString("currentScene", scene.name).apply()
@@ -475,7 +475,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         scheduleSave()
     }
 
-    fun setPadsVolume(v: Float) {
+    fun changePadsVolume(v: Float) {
         padsVolume = v.coerceIn(0f, 1f)
         Engine.nativePadsVolume(faderGain(padsVolume))
         scheduleSave()
