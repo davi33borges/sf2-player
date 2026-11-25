@@ -108,14 +108,14 @@ fun VerticalFader(
                     drawLine(if (major) InkDim else Line, Offset(cx + 8.dp.toPx(), yy), Offset(cx + 14.dp.toPx(), yy), 1.dp.toPx())
                 }
                 // trilho
-                drawRoundRect(Color.Black, Offset(cx - 2.5.dp.toPx(), top), Size(5.dp.toPx(), span), CornerRadius(3.dp.toPx()))
+                drawRoundRect(Color.Black.copy(alpha = 0.45f), Offset(cx - 2.5.dp.toPx(), top), Size(5.dp.toPx(), span), CornerRadius(3.dp.toPx()))
                 if (enabled) drawRoundRect(
                     color.copy(alpha = 0.55f), Offset(cx - 1.5.dp.toPx(), y(v)), Size(3.dp.toPx(), bottom - y(v)), CornerRadius(2.dp.toPx()),
                 )
 
                 // medidor
                 val mx = size.width - 7.dp.toPx(); val mw = 5.dp.toPx()
-                drawRoundRect(Color(0xFF07080A), Offset(mx, top), Size(mw, span), CornerRadius(2.dp.toPx()))
+                drawRoundRect(Color.Black.copy(alpha = 0.35f), Offset(mx, top), Size(mw, span), CornerRadius(2.dp.toPx()))
                 val lv = level()
                 if (lv > 0.0005f) {
                     val db = 20f * log10(lv)
@@ -132,7 +132,7 @@ fun VerticalFader(
 
                 // botão do fader
                 val cy = y(v)
-                val capColor = if (enabled) Color(0xFFE9E5DC) else Color(0xFF3A3E4A)
+                val capColor = if (enabled) Color.White else Color.White.copy(alpha = 0.25f)
                 drawRoundRect(Color.Black.copy(alpha = 0.5f), Offset(cx - capW / 2, cy - capH / 2 + 2.dp.toPx()), Size(capW, capH), CornerRadius(4.dp.toPx()))
                 drawRoundRect(capColor, Offset(cx - capW / 2, cy - capH / 2), Size(capW, capH), CornerRadius(4.dp.toPx()))
                 drawLine(if (enabled) color else Line, Offset(cx - capW / 2 + 3.dp.toPx(), cy), Offset(cx + capW / 2 - 3.dp.toPx(), cy), 3.dp.toPx())
@@ -262,7 +262,7 @@ fun KeyRangeBar(low: Int, high: Int, color: Color, modifier: Modifier = Modifier
             val w = size.width / whites.size
             whites.forEachIndexed { idx, n ->
                 drawRect(
-                    if (n in low..high) color.copy(alpha = 0.85f) else Color(0xFF2C303B),
+                    if (n in low..high) color.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.14f),
                     topLeft = Offset(idx * w + 0.5f, 0f), size = Size(w - 1f, size.height),
                 )
                 if (n % 12 == 0) drawRect(Color.Black.copy(alpha = 0.5f), Offset(idx * w, size.height - 3f), Size(w, 3f))

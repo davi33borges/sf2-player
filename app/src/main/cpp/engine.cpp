@@ -180,7 +180,25 @@ struct Slot {
     }
 };
 
-enum EvType : uint8_t { EV_NOTE_ON, EV_NOTE_OFF, EV_CC, EV_PITCH, EV_PANIC };
+enum EvType : uint8_t { EV_NOTE_ON, EV_NOTE_OFF, EV_CC, EV_PITCH, EV_PANIC, EV_PAD_ON, EV_PAD_OFF, EV_PAD_STOP_ALL };
+
+static constexpr int kPads = 8;
+static constexpr int kFade = 96;   // ~2 ms de rampa para não estalar
+
+/** Pad de sample (estilo octapad): áudio estéreo intercalado já decodificado. */
+struct Pad {
+    std::vector<float> data;
+    int frames = 0;
+    float srcRate = 48000.f;
+    float volume = 0.8f, pitch = 1.f;
+    int mode = 0;              // 0 = toca até o fim, 1 = só enquanto segura, 2 = loop (toque liga/desliga)
+    bool velocity = true;
+    int output = 0;            // modo 2 saídas: 0 = L e R, 1 = só L, 2 = só R
+    bool playing = false;
+    double pos = 0;
+    float gain = 1.f;
+    int fadeIn = 0, fadeOut = -1;   // fadeOut >= 0: parando
+};
 struct Event { EvType type; uint8_t ch; uint8_t a; uint8_t b; int16_t value; };
 
 class Engine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
@@ -198,6 +216,8 @@ public:
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
     std::atomic<float> peaks[kSlots + 3];   // canais, master, saída L, saída R
+    Pad pads[kPads];
+    float padsVolume = 1.f;
 
     Engine() {
         pending.reserve(1024); processing.reserve(1024); tmp.resize(kChunk * 2); revIn.resize(kChunk);
@@ -306,7 +326,57 @@ public:
                 if (s.font) tsf_channel_sounds_off_all(s.font, 0);
                 std::memset(s.active, -1, sizeof(s.active));
             }
+            for (auto& p : pads) if (p.playing) p.fadeOut = kFade;
             break;
+        case EV_PAD_STOP_ALL:
+            for (auto& p : pads) if (p.playing) p.fadeOut = kFade;
+            break;
+        case EV_PAD_ON: {
+            Pad& p = pads[e.a % kPads];
+            if (p.frames == 0) break;
+            if (p.mode == 2 && p.playing && p.fadeOut < 0) { p.fadeOut = kFade; break; }   // loop: segundo toque para
+            float v = e.b / 127.f;
+            p.gain = p.velocity ? v * v * 0.6f + v * 0.4f : 1.f;
+            p.pos = 0; p.playing = true; p.fadeIn = kFade; p.fadeOut = -1;
+            break;
+        }
+        case EV_PAD_OFF: {
+            Pad& p = pads[e.a % kPads];
+            if (p.mode == 1 && p.playing) p.fadeOut = kFade;
+            break;
+        }
+        }
+    }
+
+    /** Toca os pads somando no buffer de saída. */
+    void renderPads(float* dst, int n) {
+        const float ratio = 1.f / (float)sampleRate;
+        for (auto& p : pads) {
+            if (!p.playing || p.frames < 2) continue;
+            const float step = p.srcRate * ratio * p.pitch;
+            const float g = p.volume * p.gain * padsVolume;
+            const float* d = p.data.data();
+            const float toL = (!dualMono || p.output != 2) ? 1.f : 0.f, toR = (!dualMono || p.output != 1) ? 1.f : 0.f;
+            for (int i = 0; i < n; ++i) {
+                int idx = (int)p.pos;
+                if (idx >= p.frames - 1) {
+                    if (p.mode == 2) { p.pos -= (p.frames - 1); idx = (int)p.pos; }
+                    else { p.playing = false; break; }
+                }
+                float frac = (float)(p.pos - idx);
+                float l = d[idx * 2] + (d[idx * 2 + 2] - d[idx * 2]) * frac;
+                float r = d[idx * 2 + 1] + (d[idx * 2 + 3] - d[idx * 2 + 1]) * frac;
+                float env = 1.f;
+                if (p.fadeIn > 0) { env = 1.f - (float)p.fadeIn / kFade; --p.fadeIn; }
+                if (p.fadeOut >= 0) {
+                    env *= (float)p.fadeOut / kFade;
+                    if (--p.fadeOut < 0) { p.playing = false; break; }
+                }
+                l *= g * env; r *= g * env;
+                if (dualMono) { float m = (l + r) * 0.7071f; l = m; r = m; }
+                dst[i * 2] += l * toL; dst[i * 2 + 1] += r * toR;
+                p.pos += step;
+            }
         }
     }
 
@@ -370,6 +440,7 @@ public:
                 }
             }
             reverb.process(revIn.data(), dst, n);   // sempre: mantém a cauda soando depois do envio
+            renderPads(dst, n);
         }
         for (int si = 0; si < kSlots; ++si) storePeak(si, slotPeak[si]);
 
@@ -561,6 +632,75 @@ Java_com_rarodoce_sf2player_Engine_nativeStreamInfo(JNIEnv* env, jobject) {
     jintArray a = env->NewIntArray(4);
     env->SetIntArrayRegion(a, 0, 4, v);
     return a;
+}
+
+/** Recebe o áudio já decodificado (estéreo intercalado) para um pad. */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadLoad(JNIEnv* env, jobject, jint i, jfloatArray jdata, jint rate) {
+    if (!gEngine || i < 0 || i >= kPads) return;
+    std::vector<float> v;
+    if (jdata) {
+        int len = env->GetArrayLength(jdata) & ~1;
+        v.resize(len + 2, 0.f);   // um quadro extra em silêncio para a interpolação
+        env->GetFloatArrayRegion(jdata, 0, len, v.data());
+    }
+    {
+        std::lock_guard<std::mutex> g(gEngine->lock);
+        Pad& p = gEngine->pads[i];
+        p.playing = false;
+        p.data.swap(v);
+        p.frames = (int)p.data.size() / 2;
+        p.srcRate = (float)std::max(rate, 1);
+    }
+    // o áudio antigo (agora em v) é liberado aqui, fora do lock
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadSet(JNIEnv*, jobject, jint i, jfloat volume, jfloat pitchSemis,
+        jint mode, jboolean velocity, jint output) {
+    if (!gEngine || i < 0 || i >= kPads) return;
+    std::lock_guard<std::mutex> g(gEngine->lock);
+    Pad& p = gEngine->pads[i];
+    p.volume = std::clamp((float)volume, 0.f, 2.f);
+    p.pitch = std::pow(2.f, std::clamp((float)pitchSemis, -24.f, 24.f) / 12.f);
+    if (p.mode != mode && p.playing) p.fadeOut = kFade;
+    p.mode = std::clamp((int)mode, 0, 2);
+    p.velocity = velocity;
+    p.output = std::clamp((int)output, 0, 2);
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadsVolume(JNIEnv*, jobject, jfloat v) {
+    if (!gEngine) return;
+    std::lock_guard<std::mutex> g(gEngine->lock);
+    gEngine->padsVolume = std::clamp((float)v, 0.f, 4.f);
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadTrigger(JNIEnv*, jobject, jint i, jint vel) {
+    if (!gEngine || i < 0 || i >= kPads) return;
+    gEngine->push({EV_PAD_ON, 0, (uint8_t)i, (uint8_t)std::clamp((int)vel, 1, 127), 0});
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadRelease(JNIEnv*, jobject, jint i) {
+    if (!gEngine || i < 0 || i >= kPads) return;
+    gEngine->push({EV_PAD_OFF, 0, (uint8_t)i, 0, 0});
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadsStop(JNIEnv*, jobject) {
+    if (!gEngine) return;
+    gEngine->push({EV_PAD_STOP_ALL, 0, 0, 0, 0});
+}
+
+/** 1 para cada pad tocando. */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativePadStates(JNIEnv* env, jobject, jintArray out) {
+    if (!gEngine) return;
+    jint v[kPads];
+    for (int i = 0; i < kPads; ++i) v[i] = gEngine->pads[i].playing ? 1 : 0;   // leitura sem lock: só para a tela
+    env->SetIntArrayRegion(out, 0, kPads, v);
 }
 
 /** Lê e zera os picos: 8 canais, master, saída L, saída R. */

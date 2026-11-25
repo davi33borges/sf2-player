@@ -32,6 +32,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var master by mutableFloatStateOf(prefs.getFloat("masterFader", 0.75f)); private set
     var reverb by mutableStateOf(ReverbState.fromJson(prefs.getString("reverb", null)?.let { runCatching { org.json.JSONObject(it) }.getOrNull() })); private set
 
+    // ---- pads de sample ----
+    private val samplesDir = File(app.filesDir, "samples").apply { mkdirs() }
+    val pads = mutableStateListOf<PadState>().apply { addAll(padsFromJson(prefs.getString("pads", null))) }
+    var padsVolume by mutableFloatStateOf(prefs.getFloat("padsVolume", 0.75f)); private set
+    /** Pads tocando agora (para acender na tela). */
+    val padPlaying = mutableStateListOf(*Array(PAD_COUNT) { false })
+    /** Momento do último disparo de cada pad (pisca na tela). */
+    val padHit = mutableStateListOf(*Array(PAD_COUNT) { 0L })
+    private val padStateBuf = IntArray(PAD_COUNT)
+
     private val scenesFile = File(app.filesDir, "presets.json")
     private val timbresFile = File(app.filesDir, "timbres.json")
     val scenes = mutableStateListOf<Scene>().apply { addAll(listFromJson(scenesFile.takeIf { it.exists() }?.readText(), Scene::fromJson)) }
@@ -78,8 +88,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         midi.preferredKey = prefs.getString("midiSource", null)
         midi.start()
         // recarrega os instrumentos salvos
-        slots.forEachIndexed { i, s ->
+        slots.toList().forEachIndexed { i, s ->
             if (s.path != null) loadSlotState(i, s)
+        }
+        Engine.nativePadsVolume(faderGain(padsVolume))
+        pads.toList().forEachIndexed { i, p ->
+            Engine.applyPad(i, p)
+            if (p.path != null) loadPadState(i, p)
         }
     }
 
@@ -123,7 +138,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val hits = mapSnapshot.filter { it.matches(kind, ch, n) }
         if (hits.isEmpty()) return false
-        main.post { hits.forEach { applyMapping(it.target, value, isOn, kind) } }
+        // pads disparam direto daqui, sem passar pela tela: o mínimo de atraso
+        for (h in hits) if (h.target.isPad) {
+            val pad = h.target.slot
+            if (isOn && value > 0) { Engine.nativePadTrigger(pad, value); main.post { padHit[pad] = System.nanoTime() } }
+            else Engine.nativePadRelease(pad)
+        }
+        val rest = hits.filterNot { it.target.isPad }
+        if (rest.isNotEmpty()) main.post { rest.forEach { applyMapping(it.target, value, isOn, kind) } }
         return true
     }
 
@@ -156,6 +178,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_PRESET_NEXT -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset + 1) % s.presets.size)
             TargetType.SLOT_PRESET_PREV -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset - 1 + s.presets.size) % s.presets.size)
             TargetType.PANIC -> if (isOn && value > 0) panic()
+            TargetType.PADS_STOP -> if (isOn && value > 0) Engine.nativePadsStop()
+            TargetType.PAD_TRIGGER -> Unit   // tratado direto na thread de MIDI
         }
     }
 
@@ -223,6 +247,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val next = if (peak > shown) peak else shown * 0.88f
             if (kotlin.math.abs(next - shown) > 0.002f || (next == 0f && shown != 0f)) meters[i] = if (next < 0.002f) 0f else next
         }
+        Engine.nativePadStates(padStateBuf)
+        for (i in 0 until PAD_COUNT) { val on = padStateBuf[i] == 1; if (padPlaying[i] != on) padPlaying[i] = on }
     }
 
     fun panic() = Engine.nativePanic()
@@ -330,7 +356,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun removeFont(i: Int) {
         Engine.nativeUnload(i)
         slots[i] = SlotState()
-        mappings.removeAll { it.target.slot == i }
+        mappings.removeAll { it.target.usesSlot && it.target.slot == i }
         saveMappings()
         scheduleSave()
         cleanupFonts()
@@ -342,10 +368,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         slots.mapNotNullTo(used) { it.path }
         scenes.forEach { sc -> sc.slots.mapNotNullTo(used) { it.path } }
         timbres.mapNotNullTo(used) { it.slot.path }
+        pads.mapNotNullTo(used) { it.path }
+        scenes.forEach { sc -> sc.pads.mapNotNullTo(used) { it.path } }
         io.execute {
             val recent = System.currentTimeMillis() - 120_000   // não apaga o que acabou de ser importado
             fontsDir.listFiles()?.forEach { f ->
                 if (f.name.endsWith(".sf2") && f.absolutePath !in used && f.lastModified() < recent) f.delete()
+            }
+            samplesDir.listFiles()?.forEach { f ->
+                if (f.absolutePath !in used && f.lastModified() < recent) f.delete()
             }
         }
     }
@@ -357,6 +388,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val scene = Scene(
             clean, System.currentTimeMillis(), slots.map { it.copy(loading = false, error = null) },
             master, reverb, mappings.toList(),
+            pads.map { it.copy(loading = false, error = null) }, padsVolume,
         )
         val idx = scenes.indexOfFirst { it.name.equals(clean, true) }
         if (idx >= 0) scenes[idx] = scene else scenes.add(scene)
@@ -370,6 +402,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for (i in 0 until SLOT_COUNT) loadSlotState(i, scene.slots.getOrElse(i) { SlotState() })
         setMasterVolume(scene.master)
         changeReverb(scene.reverb)
+        if (scene.pads.isNotEmpty()) {
+            Engine.nativePadsStop()
+            for (i in 0 until PAD_COUNT) loadPadState(i, scene.pads.getOrElse(i) { PadState(color = i) })
+            setPadsVolume(scene.padsVolume)
+        }
         mappings.clear(); mappings.addAll(scene.mappings); saveMappings()
         currentScene = scene.name; prefs.edit().putString("currentScene", scene.name).apply()
         toast = "Preset \"${scene.name}\" carregado"
@@ -419,11 +456,101 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         io.execute { timbresFile.writeText(json) }
     }
 
+    // ---------------- pads de sample ----------------
+
+    fun padDown(i: Int, velocity: Int = 110) {
+        if (!pads[i].loaded) return
+        Engine.nativePadTrigger(i, velocity)
+        padHit[i] = System.nanoTime()
+    }
+
+    fun padUp(i: Int) = Engine.nativePadRelease(i)
+
+    fun stopPads() = Engine.nativePadsStop()
+
+    fun updatePad(i: Int, f: (PadState) -> PadState) {
+        val n = f(pads[i])
+        pads[i] = n
+        Engine.applyPad(i, n)
+        scheduleSave()
+    }
+
+    fun setPadsVolume(v: Float) {
+        padsVolume = v.coerceIn(0f, 1f)
+        Engine.nativePadsVolume(faderGain(padsVolume))
+        scheduleSave()
+    }
+
+    /** Copia o áudio escolhido para a biblioteca do app e carrega no pad. */
+    fun importSample(i: Int, uri: Uri) {
+        val ctx = getApplication<Application>()
+        var name = "sample.wav"; var size = -1L
+        ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) { name = c.getString(0) ?: name; if (!c.isNull(1)) size = c.getLong(1) }
+        }
+        pads[i] = pads[i].copy(loading = true, error = null)
+        io.execute {
+            val ext = name.substringAfterLast('.', "audio").take(5)
+            val base = name.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9._ -]"), "_").take(60)
+            var dest = File(samplesDir, "${base}_$size.$ext")
+            if (size < 0 || !dest.exists() || dest.length() != size) {
+                val tmp = File(samplesDir, "import_${System.nanoTime()}.tmp")
+                val ok = runCatching {
+                    ctx.contentResolver.openInputStream(uri)!!.use { input -> tmp.outputStream().use { input.copyTo(it, 1 shl 16) } }
+                }.isSuccess
+                if (!ok) { tmp.delete(); main.post { pads[i] = pads[i].copy(loading = false, error = "Não consegui ler o arquivo") }; return@execute }
+                dest = File(samplesDir, "${base}_${tmp.length()}.$ext")
+                if (dest.exists()) tmp.delete() else tmp.renameTo(dest)
+            }
+            val keepName = pads[i].name.takeIf { pads[i].path != null && it.isNotBlank() }
+            decodeInto(i, dest.absolutePath) { secs ->
+                updatePad(i) { it.copy(path = dest.absolutePath, fileName = name, name = keepName ?: base.take(16), seconds = secs, loading = false, error = null) }
+                cleanupFonts()
+            }
+        }
+    }
+
+    private fun loadPadState(i: Int, target: PadState) {
+        val path = target.path
+        if (path == null || !File(path).exists()) {
+            Engine.nativePadLoad(i, null, 48000)
+            pads[i] = if (path == null) target.copy(seconds = 0f) else target.copy(path = null, seconds = 0f, error = "Arquivo não encontrado")
+            Engine.applyPad(i, pads[i])
+            scheduleSave()
+            return
+        }
+        pads[i] = target.copy(loading = true, seconds = 0f, error = null)
+        Engine.applyPad(i, target)
+        io.execute { decodeInto(i, path) { secs -> updatePad(i) { it.copy(seconds = secs, loading = false) } } }
+    }
+
+    /** Decodifica na thread de arquivos e entrega ao motor; [done] roda na thread principal. */
+    private fun decodeInto(i: Int, path: String, done: (Float) -> Unit) {
+        val r = runCatching { AudioDecoder.decode(path) }
+        r.onSuccess { res ->
+            Engine.nativePadLoad(i, res.data, res.sampleRate)
+            main.post { done(res.seconds) }
+        }.onFailure { e ->
+            main.post { pads[i] = pads[i].copy(loading = false, seconds = 0f, error = "Formato não suportado") }
+        }
+    }
+
+    fun removeSample(i: Int) {
+        Engine.nativePadLoad(i, null, 48000)
+        pads[i] = PadState(color = pads[i].color)
+        mappings.removeAll { it.target.isPad && it.target.slot == i }
+        saveMappings()
+        scheduleSave()
+        cleanupFonts()
+    }
+
     private val saveTask = Runnable {
         prefs.edit()
             .putString("slots", slotsToJson(slots))
             .putFloat("masterFader", master)
             .putString("reverb", reverb.toJson().toString())
+            .putString("pads", listToJson(pads.toList()) { it.toJson() })
+            .putFloat("padsVolume", padsVolume)
             .apply()
     }
 

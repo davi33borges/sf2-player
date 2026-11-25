@@ -31,6 +31,19 @@ object Engine {
     external fun nativePitchBend(channel: Int, value: Int)
     external fun nativePanic()
 
+    // ---- pads de sample ----
+    /** Áudio já decodificado: estéreo intercalado. */
+    external fun nativePadLoad(pad: Int, data: FloatArray?, sampleRate: Int)
+    external fun nativePadSet(pad: Int, volume: Float, pitchSemis: Float, mode: Int, velocity: Boolean, output: Int)
+    external fun nativePadsVolume(volume: Float)
+    external fun nativePadTrigger(pad: Int, velocity: Int)
+    external fun nativePadRelease(pad: Int)
+    external fun nativePadsStop()
+    external fun nativePadStates(out: IntArray)
+
+    fun applyPad(i: Int, p: PadState) =
+        nativePadSet(i, faderGain(p.volume), p.pitch.toFloat(), p.mode, p.velocity, p.output)
+
     fun apply(index: Int, s: SlotState) = nativeSetSlot(
         index, s.enabled, s.preset, s.transpose, s.lowKey, s.highKey, s.channel,
         floatArrayOf(

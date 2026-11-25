@@ -12,6 +12,9 @@ App Android que transforma o celular ou tablet num módulo de som para teclado M
   - **saídas L e R** com volume, mute e medidor próprios; modo **2 saídas independentes**
     (ex.: L numa caixa, R na mesa de som) e roteamento de cada canal para L, R ou as duas
   - **reverb geral**: tamanho, tom e volume
+- **Aba Pads**: 8 pads para disparar samples (WAV, MP3, OGG, FLAC, M4A), estilo octapad. Cada pad tem
+  nome, cor, volume, afinação, modo (toca até o fim / enquanto segura / loop), força da batida, saída L/R
+  e disparo por pad ou tecla do teclado MIDI
 - **Presets gerais**: salve a mesa inteira (todos os .sf2, timbres, master, reverb e mapeamentos) com um nome
   e carregue em um toque, por exemplo antes de um evento
 - **Timbres salvos**: guarde o som de um canal (.sf2 + preset + ajustes) e use em qualquer canal

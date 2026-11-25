@@ -108,6 +108,7 @@ fun MainScreen(vm: MainViewModel) {
     var configSlot by remember { mutableIntStateOf(-1) }
     var showScenes by remember { mutableStateOf(false) }
     var showMaster by remember { mutableStateOf(false) }
+    var tab by remember { mutableIntStateOf(0) }   // 0 = mesa, 1 = pads
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null && pickSlot >= 0) vm.importFont(pickSlot, uri)
@@ -119,12 +120,13 @@ fun MainScreen(vm: MainViewModel) {
     // medidores: lê os níveis a cada quadro da tela
     LaunchedEffect(Unit) { while (true) { withFrameNanos { }; vm.pollMeters() } }
 
-    Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+    Box(Modifier.fillMaxSize().background(AppGradient).safeDrawingPadding()) {
         Column(Modifier.fillMaxSize()) {
-            TopBar(vm, onMidi = { showMidi = true }, onScenes = { showScenes = true })
+            TopBar(vm, tab, onTab = { tab = it }, onMidi = { showMidi = true }, onScenes = { showScenes = true })
             AnimatedVisibility(visible = vm.learn != null) { LearnBanner(vm) }
             Box(Modifier.weight(1f)) {
-                Mixer(vm, Modifier.fillMaxSize(), onConfig = { configSlot = it }, onPick = pick, onMaster = { showMaster = true; vm.refreshStreamInfo() })
+                if (tab == 0) Mixer(vm, Modifier.fillMaxSize(), onConfig = { configSlot = it }, onPick = pick, onMaster = { showMaster = true; vm.refreshStreamInfo() })
+                else PadsScreen(vm, Modifier.fillMaxSize())
                 if (showMaster) {
                     BackHandler { showMaster = false }
                     MasterConfig(vm) { showMaster = false }
@@ -148,7 +150,7 @@ fun MainScreen(vm: MainViewModel) {
 // ------------------------------------------------------------------ barra do topo
 
 @Composable
-private fun TopBar(vm: MainViewModel, onMidi: () -> Unit, onScenes: () -> Unit) {
+private fun TopBar(vm: MainViewModel, tab: Int, onTab: (Int) -> Unit, onMidi: () -> Unit, onScenes: () -> Unit) {
     var lit by remember { mutableStateOf(false) }
     LaunchedEffect(vm.activity) { if (vm.activity != 0L) { lit = true; delay(90); lit = false } }
     val led by animateColorAsState(if (lit) Accent else if (vm.connected != null) Ok else InkDim, tween(80), label = "led")
@@ -157,21 +159,35 @@ private fun TopBar(vm: MainViewModel, onMidi: () -> Unit, onScenes: () -> Unit) 
         Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Rounded.Piano, null, tint = Accent, modifier = Modifier.size(22.dp))
+        Icon(Icons.Rounded.Piano, null, tint = Ink, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(8.dp))
         Text("SF2 Player", fontWeight = FontWeight.Black, fontSize = 17.sp, color = Ink)
         Spacer(Modifier.width(14.dp))
+        // abas: mesa de som e pads
+        Row(
+            Modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.2f)).padding(3.dp),
+        ) {
+            listOf("Mesa", "Pads").forEachIndexed { idx, label ->
+                val sel = tab == idx
+                Text(
+                    label, color = if (sel) Bg else Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).background(if (sel) Color.White else Color.Transparent)
+                        .clickable { onTab(idx) }.padding(horizontal = 16.dp, vertical = 5.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
         Text(
             if (vm.audioOk) vm.lastEvent.ifEmpty { "Toque no teclado para testar" } else "Erro ao abrir o áudio",
-            color = if (vm.audioOk) InkDim else Color(0xFFFF5C5C), fontSize = 12.sp, fontFamily = Mono,
+            color = if (vm.audioOk) InkDim else Danger, fontSize = 12.sp, fontFamily = Mono,
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
         Row(
-            Modifier.clip(RoundedCornerShape(50)).background(Accent.copy(alpha = 0.14f)).border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(50))
+            Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.18f)).border(1.dp, Line, RoundedCornerShape(50))
                 .clickable(onClick = onScenes).padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 220.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.LibraryMusic, null, tint = Accent, modifier = Modifier.size(16.dp))
+            Icon(Icons.Rounded.LibraryMusic, null, tint = Ink, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
             Text(vm.currentScene ?: "Presets", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -188,7 +204,7 @@ private fun TopBar(vm: MainViewModel, onMidi: () -> Unit, onScenes: () -> Unit) 
             Spacer(Modifier.width(4.dp))
             Text(vm.connected?.deviceName ?: "Sem teclado", fontSize = 13.sp, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(onClick = vm::panic) { Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Color(0xFFFF5C5C)) }
+        IconButton(onClick = vm::panic) { Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Danger) }
     }
 }
 
@@ -275,7 +291,7 @@ private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modi
                 }
                 else -> {
                     Icon(Icons.Rounded.Add, null, tint = InkDim, modifier = Modifier.size(16.dp))
-                    Text(s.error ?: "Adicionar .sf2", color = if (s.error != null) Color(0xFFFF5C5C) else InkDim,
+                    Text(s.error ?: "Adicionar .sf2", color = if (s.error != null) Danger else InkDim,
                         fontSize = 9.sp, maxLines = 2, textAlign = TextAlign.Center)
                 }
             }
@@ -301,11 +317,11 @@ private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modi
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             SmallButton(
-                if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Color(0xFFFF5C5C),
+                if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Danger,
                 Modifier.weight(1f), filled = s.loaded && s.enabled,
             ) { if (s.loaded) vm.update(i) { it.copy(enabled = !it.enabled) } }
             // botão do teclado que liga/desliga este timbre
-            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_TOGGLE, i), if (s.enabled) color else Color(0xFFFF5C5C), Modifier.weight(1f))
+            if (s.loaded) LearnChip(vm, Target(TargetType.SLOT_TOGGLE, i), if (s.enabled) color else Danger, Modifier.weight(1f))
         }
     }
 }
@@ -355,7 +371,7 @@ private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick
     var listTimbres by remember { mutableStateOf(false) }
 
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(14.dp)).background(Panel)
+        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp)).background(Sheet)
             .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
             // bloqueia toques na mesa que está por baixo
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
@@ -373,7 +389,7 @@ private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick
                 Text(s.presetName, color = InkDim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // liga/desliga + mapeamento no teclado
-            SmallButton(if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Color(0xFFFF5C5C), filled = s.enabled) {
+            SmallButton(if (s.enabled) "ON" else "MUTE", if (s.enabled) color else Danger, filled = s.enabled) {
                 vm.update(i) { it.copy(enabled = !it.enabled) }
             }
             Spacer(Modifier.width(4.dp))
@@ -385,7 +401,7 @@ private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick
                     DropdownMenuItem(text = { Text("Carregar timbre salvo…") }, onClick = { menu = false; listTimbres = true })
                     DropdownMenuItem(text = { Text("Trocar arquivo .sf2") }, onClick = { menu = false; onClose(); onPick() })
                     HorizontalDivider()
-                    DropdownMenuItem(text = { Text("Remover instrumento", color = Color(0xFFFF5C5C)) },
+                    DropdownMenuItem(text = { Text("Remover instrumento", color = Danger) },
                         onClick = { menu = false; onClose(); vm.removeFont(i) })
                 }
             }
@@ -423,7 +439,7 @@ private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick
 private fun PresetColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
     var query by remember { mutableStateOf("") }
     val list = s.presets.withIndex().filter { query.isBlank() || it.value.contains(query, true) }
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp)) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp)) {
         SectionTitle(if (s.loaded) "PRESET · ${s.preset + 1}/${s.presets.size}" else "PRESET")
         Row(
             Modifier.padding(vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(PanelHi)
@@ -465,7 +481,7 @@ private fun PresetColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, 
 @Composable
 private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
     val upd: ((SlotState) -> SlotState) -> Unit = { f -> vm.update(i, f) }
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp).verticalScroll(rememberScrollState())) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionTitle("TIMBRE", Modifier.weight(1f))
             SmallButton("Som original", InkDim) { upd { it.resetSound() } }
@@ -506,7 +522,7 @@ private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, m
 
 @Composable
 private fun KeyboardColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, modifier: Modifier) {
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp).verticalScroll(rememberScrollState())) {
         SectionTitle("TECLAS (SPLIT)")
         Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("${noteName(s.lowKey)} – ${noteName(s.highKey)}", fontFamily = Mono, color = Ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
@@ -694,7 +710,7 @@ private fun ScenesDialog(vm: MainViewModel, onClose: () -> Unit) {
     confirmDelete?.let { sc ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            confirmButton = { TextButton(onClick = { vm.deleteScene(sc); confirmDelete = null }) { Text("Apagar", color = Color(0xFFFF5C5C)) } },
+            confirmButton = { TextButton(onClick = { vm.deleteScene(sc); confirmDelete = null }) { Text("Apagar", color = Danger) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancelar") } },
             title = { Text("Apagar \"${sc.name}\"?") },
             text = { Text("Esse preset geral será apagado.") },
@@ -739,7 +755,7 @@ private fun TimbresDialog(vm: MainViewModel, i: Int, onClose: () -> Unit) {
 private fun MasterConfig(vm: MainViewModel, onClose: () -> Unit) {
     val blue = Color(0xFF8FB8FF)
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(14.dp)).background(Panel)
+        Modifier.fillMaxSize().padding(horizontal = 8.dp).padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp)).background(Sheet)
             .border(1.dp, Line, RoundedCornerShape(14.dp))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
     ) {
@@ -769,7 +785,7 @@ private fun MasterConfig(vm: MainViewModel, onClose: () -> Unit) {
 private fun DeviceColumn(vm: MainViewModel, modifier: Modifier) {
     val info = vm.streamInfo
     val current = vm.outputs.deviceKey
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp).verticalScroll(rememberScrollState())) {
         SectionTitle("PLACA DE ÁUDIO")
         DeviceRow("Automático", "O Android escolhe (usa a placa USB quando plugada)", current == null) { vm.selectDevice(null) }
         vm.audioDevices.forEach { d ->
@@ -811,7 +827,7 @@ private fun DeviceRow(title: String, subtitle: String, selected: Boolean, highli
 @Composable
 private fun OutputsColumn(vm: MainViewModel, modifier: Modifier) {
     val o = vm.outputs
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp)) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp)) {
         SectionTitle("SAÍDAS")
         Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallButton("Estéreo", Accent, filled = !o.dual) { vm.changeOutputs(o.copy(dual = false)) }
@@ -853,7 +869,7 @@ private fun OutputStrip(
                 LearnChip(vm, Target(muteTarget), c)
             }
         }
-        SmallButton(if (muted) "MUTE" else "ON", if (muted) Color(0xFFFF5C5C) else c, Modifier.fillMaxWidth().padding(top = 4.dp),
+        SmallButton(if (muted) "MUTE" else "ON", if (muted) Danger else c, Modifier.fillMaxWidth().padding(top = 4.dp),
             filled = !muted, onClick = onMute)
     }
 }
@@ -861,7 +877,7 @@ private fun OutputStrip(
 @Composable
 private fun ReverbColumn(vm: MainViewModel, c: Color, modifier: Modifier) {
     val r = vm.reverb
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Bg).padding(8.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp).verticalScroll(rememberScrollState())) {
         SectionTitle("REVERB GERAL")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.changeReverb(vm.reverb.copy(size = v)) },

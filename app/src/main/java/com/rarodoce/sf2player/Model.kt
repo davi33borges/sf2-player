@@ -92,11 +92,18 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     OUT_L_MUTE("Mute da saída L", false),
     OUT_R_MUTE("Mute da saída R", false),
     PANIC("Parar todos os sons", false),
+    PAD_TRIGGER("Disparar pad", false),
+    PADS_STOP("Parar todos os pads", false),
 }
 
 data class Target(val type: TargetType, val slot: Int = -1) {
     val usesSlot get() = type.name.startsWith("SLOT_")
-    fun describe() = if (usesSlot) "${type.label} · Instrumento ${slot + 1}" else type.label
+    val isPad get() = type == TargetType.PAD_TRIGGER
+    fun describe() = when {
+        usesSlot -> "${type.label} · Instrumento ${slot + 1}"
+        isPad -> "Pad ${slot + 1}"
+        else -> type.label
+    }
 }
 
 enum class SourceKind { CC, NOTE }
@@ -162,6 +169,44 @@ data class ReverbState(val size: Float = 0.6f, val tone: Float = 0.6f, val level
     }
 }
 
+const val PAD_COUNT = 8
+
+/** Pad de sample (estilo octapad). */
+data class PadState(
+    val path: String? = null,
+    val fileName: String = "",
+    val name: String = "",
+    val color: Int = 0,
+    val volume: Float = 0.75f,         // posição de fader (0,75 = 0 dB)
+    val pitch: Int = 0,                // semitons
+    val mode: Int = 0,                 // 0 toca até o fim, 1 enquanto segura, 2 loop
+    val velocity: Boolean = true,
+    val output: Int = 0,
+    val seconds: Float = 0f,
+    val loading: Boolean = false,
+    val error: String? = null,
+) {
+    val loaded get() = path != null && seconds > 0f
+    val label get() = name.ifBlank { fileName.substringBeforeLast('.') }
+    fun toJson() = JSONObject().apply {
+        put("path", path ?: JSONObject.NULL); put("fileName", fileName); put("name", name); put("color", color)
+        put("volume", volume.toDouble()); put("pitch", pitch); put("mode", mode); put("velocity", velocity); put("output", output)
+    }
+    companion object {
+        fun fromJson(o: JSONObject) = PadState(
+            path = if (o.isNull("path")) null else o.optString("path"), fileName = o.optString("fileName"),
+            name = o.optString("name"), color = o.optInt("color"), volume = o.optDouble("volume", 0.75).toFloat(),
+            pitch = o.optInt("pitch"), mode = o.optInt("mode"), velocity = o.optBoolean("velocity", true), output = o.optInt("output"),
+        )
+    }
+}
+
+fun padsFromJson(s: String?): List<PadState> {
+    val list = MutableList(PAD_COUNT) { PadState(color = it) }
+    listFromJson(s, PadState::fromJson).take(PAD_COUNT).forEachIndexed { i, p -> list[i] = p }
+    return list
+}
+
 /** Preset geral: todos os canais, master, reverb e mapeamentos. */
 data class Scene(
     val name: String,
@@ -170,12 +215,15 @@ data class Scene(
     val master: Float,
     val reverb: ReverbState,
     val mappings: List<Mapping>,
+    val pads: List<PadState> = emptyList(),
+    val padsVolume: Float = 0.75f,
 ) {
     val instrumentCount get() = slots.count { it.path != null }
     fun toJson() = JSONObject().apply {
         put("name", name); put("savedAt", savedAt); put("master", master.toDouble())
         put("slots", JSONArray(slotsToJson(slots))); put("reverb", reverb.toJson())
         put("mappings", JSONArray(mappingsToJson(mappings)))
+        put("pads", JSONArray(listToJson(pads) { it.toJson() })); put("padsVolume", padsVolume.toDouble())
     }
     companion object {
         fun fromJson(o: JSONObject) = Scene(
@@ -184,6 +232,8 @@ data class Scene(
             o.optDouble("master", 0.75).toFloat(),
             ReverbState.fromJson(o.optJSONObject("reverb")),
             mappingsFromJson(o.optJSONArray("mappings")?.toString()),
+            o.optJSONArray("pads")?.let { padsFromJson(it.toString()) } ?: emptyList(),
+            o.optDouble("padsVolume", 0.75).toFloat(),
         )
     }
 }
