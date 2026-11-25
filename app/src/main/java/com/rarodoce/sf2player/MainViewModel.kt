@@ -110,7 +110,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun handleSpecial(kind: SourceKind, ch: Int, n: Int, value: Int, isOn: Boolean): Boolean {
         when (val l = learnSnapshot) {
             is LearnMode.Control -> {
-                if (!isOn || (kind == SourceKind.CC && value == 0 && !l.target.type.continuous)) return true
+                // nota: aprende no aperto; CC: aprende com qualquer valor (botões em modo toggle mandam 127 e 0)
+                if (kind == SourceKind.NOTE && !isOn) return true
                 main.post { finishLearn(Mapping(kind, ch, n, l.target)) }
                 return true
             }
@@ -122,11 +123,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val hits = mapSnapshot.filter { it.matches(kind, ch, n) }
         if (hits.isEmpty()) return false
-        main.post { hits.forEach { applyMapping(it.target, value, isOn) } }
+        main.post { hits.forEach { applyMapping(it.target, value, isOn, kind) } }
         return true
     }
 
-    private fun applyMapping(t: Target, value: Int, isOn: Boolean) {
+    private fun applyMapping(t: Target, value: Int, isOn: Boolean, kind: SourceKind) {
         val v = value / 127f
         val s = slots.getOrNull(t.slot)
         when (t.type) {
@@ -147,7 +148,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.OUT_R_MUTE -> if (isOn && value > 0) changeOutputs(outputs.copy(muteR = !outputs.muteR))
             TargetType.REVERB_LEVEL -> if (isOn) changeReverb(reverb.copy(level = v))
             // botões: só reage ao apertar (valor > 0)
-            TargetType.SLOT_TOGGLE -> if (isOn && value > 0 && s != null) update(t.slot) { it.copy(enabled = !it.enabled) }
+            // botão CC: 127 liga, 0 desliga (um toque só). Pad (nota): cada toque alterna.
+            TargetType.SLOT_TOGGLE -> if (s != null) {
+                if (kind == SourceKind.CC) { if (s.enabled != (value >= 64)) update(t.slot) { it.copy(enabled = value >= 64) } }
+                else if (isOn && value > 0) update(t.slot) { it.copy(enabled = !it.enabled) }
+            }
             TargetType.SLOT_PRESET_NEXT -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset + 1) % s.presets.size)
             TargetType.SLOT_PRESET_PREV -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset - 1 + s.presets.size) % s.presets.size)
             TargetType.PANIC -> if (isOn && value > 0) panic()
@@ -174,7 +179,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         mappings.add(m)
         saveMappings()
         changeLearn(null)
-        toast = "${m.target.describe()} → ${m.shortLabel()}"
     }
 
     private fun learnRangeKey(l: LearnMode.KeyRange, note: Int) {
@@ -182,7 +186,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val lo = minOf(l.low, note); val hi = maxOf(l.low, note)
         update(l.slot) { it.copy(lowKey = lo, highKey = hi) }
         changeLearn(null)
-        toast = "Instrumento ${l.slot + 1}: ${noteName(lo)} a ${noteName(hi)}"
     }
 
     fun mappingFor(target: Target) = mappings.firstOrNull { it.target == target }
