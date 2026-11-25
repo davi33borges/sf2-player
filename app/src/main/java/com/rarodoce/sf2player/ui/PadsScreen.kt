@@ -120,11 +120,13 @@ private fun PadsSide(vm: MainViewModel, editing: Boolean, onEdit: () -> Unit, mo
             modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 4.dp),
         )
         Text(faderDb(vm.padsVolume), color = Ink, fontSize = 10.sp, fontFamily = Mono)
-        // fader do teclado que controla o volume dos pads
-        LearnChip(vm, Target(TargetType.PADS_VOLUME), Color.White, Modifier.padding(top = 4.dp).fillMaxWidth())
+        // fader do teclado que controla o volume geral dos pads
+        Text("volume no teclado", color = InkDim, fontSize = 9.sp, modifier = Modifier.padding(top = 6.dp))
+        LearnChip(vm, Target(TargetType.PADS_VOLUME), Color.White, Modifier.padding(top = 2.dp).fillMaxWidth())
         Spacer(Modifier.height(6.dp))
         SmallButton("Parar", Danger, Modifier.fillMaxWidth()) { vm.stopPads() }
-        LearnChip(vm, Target(TargetType.PADS_STOP), Danger, Modifier.padding(top = 4.dp).fillMaxWidth())
+        Text("parar no teclado", color = InkDim, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
+        LearnChip(vm, Target(TargetType.PADS_STOP), Danger, Modifier.padding(top = 2.dp).fillMaxWidth())
         Spacer(Modifier.height(6.dp))
         SmallButton(if (editing) "Pronto" else "Editar", Ink, Modifier.fillMaxWidth(), filled = editing, onClick = onEdit)
     }

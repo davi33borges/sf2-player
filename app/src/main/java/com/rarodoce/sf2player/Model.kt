@@ -18,7 +18,7 @@ data class SlotState(
     val highKey: Int = 127,
     val channel: Int = -1,             // -1 = todos
     val release: Float = 0f,           // -1..1 (0 = release original do SF2)
-    val velocity: Float = 1f,          // sensibilidade 0..1
+    val velocity: Float = 0.5f,        // 0 = fixa, 0,5 = normal, 1 = muito sensível
     val eqLow: Float = 0f,             // dB
     val eqMid: Float = 0f,
     val eqHigh: Float = 0f,
@@ -26,6 +26,9 @@ data class SlotState(
     val comp: Float = 0f,              // 0..1
     val reverb: Float = 0.2f,          // envio para o reverb 0..1
     val output: Int = 0,               // modo 2 saídas: 0 = L e R, 1 = só L, 2 = só R
+    val delayTime: Float = 0.6f,       // 0..1 (≈ 400 ms)
+    val delayMix: Float = 0f,          // intensidade 0..1 (0 = desligado)
+    val poly: Int = 32,                // polifonia (vozes)
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -37,13 +40,14 @@ data class SlotState(
         put("path", path ?: JSONObject.NULL); put("fileName", fileName); put("preset", preset)
         put("enabled", enabled); put("volume", volume.toDouble()); put("pan", pan.toDouble())
         put("transpose", transpose); put("lowKey", lowKey); put("highKey", highKey); put("channel", channel)
-        put("release", release.toDouble()); put("velocity", velocity.toDouble()); put("eqLow", eqLow.toDouble())
+        put("release", release.toDouble()); put("velCurve", velocity.toDouble()); put("eqLow", eqLow.toDouble())
         put("eqMid", eqMid.toDouble()); put("eqHigh", eqHigh.toDouble()); put("cutoff", cutoff.toDouble()); put("comp", comp.toDouble())
         put("reverb", reverb.toDouble()); put("output", output)
+        put("delayTime", delayTime.toDouble()); put("delayMix", delayMix.toDouble()); put("poly", poly)
     }
 
     /** Volta o timbre ao som original do SF2 (mantém arquivo, preset e teclado). */
-    fun resetSound() = copy(release = 0f, velocity = 1f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f, reverb = 0.2f)
+    fun resetSound() = copy(release = 0f, velocity = 0.5f, delayMix = 0f, delayTime = 0.6f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f, reverb = 0.2f)
 
     companion object {
         fun fromJson(o: JSONObject) = SlotState(
@@ -58,7 +62,7 @@ data class SlotState(
             highKey = o.optInt("highKey", 127),
             channel = o.optInt("channel", -1),
             release = o.optDouble("release", 0.0).toFloat(),
-            velocity = o.optDouble("velocity", 1.0).toFloat(),
+            velocity = o.optDouble("velCurve", 0.5).toFloat(),
             eqLow = o.optDouble("eqLow", 0.0).toFloat(),
             eqMid = o.optDouble("eqMid", 0.0).toFloat(),
             eqHigh = o.optDouble("eqHigh", 0.0).toFloat(),
@@ -66,6 +70,9 @@ data class SlotState(
             comp = o.optDouble("comp", 0.0).toFloat(),
             reverb = o.optDouble("reverb", 0.2).toFloat(),
             output = o.optInt("output", 0),
+            delayTime = o.optDouble("delayTime", 0.6).toFloat(),
+            delayMix = o.optDouble("delayMix", 0.0).toFloat(),
+            poly = o.optInt("poly", 32),
         )
     }
 }
@@ -82,6 +89,8 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     SLOT_CUTOFF("Cutoff", true),
     SLOT_COMP("Compressor", true),
     SLOT_REVERB("Reverb", true),
+    SLOT_DELAY_MIX("Delay (intensidade)", true),
+    SLOT_DELAY_TIME("Delay (tempo)", true),
     SLOT_TOGGLE("Liga/desliga (mute)", false),
     SLOT_PRESET_NEXT("Próximo preset", false),
     SLOT_PRESET_PREV("Preset anterior", false),

@@ -30,6 +30,13 @@ object Engine {
     external fun nativeControl(channel: Int, cc: Int, value: Int)
     external fun nativePitchBend(channel: Int, value: Int)
     external fun nativePanic()
+    /** Buffer de áudio = N × burst (maior = mais estável em aparelhos fracos, porém mais atraso). */
+    external fun nativeSetBufferMul(mul: Int)
+    external fun nativeRecord(on: Boolean)
+    /** Lê o que foi gravado do master (estéreo intercalado); retorna quantas amostras vieram. */
+    external fun nativeRecRead(out: FloatArray): Int
+    /** Descarrega todos os timbres e samples. */
+    external fun nativeResetAll()
 
     // ---- pads de sample ----
     /** Áudio já decodificado: estéreo intercalado. */
@@ -49,6 +56,7 @@ object Engine {
         floatArrayOf(
             faderGain(s.volume), s.pan, releaseMul(s.release), s.velocity,
             s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp, s.reverb, s.output.toFloat(),
+            s.velocity, delayMs(s.delayTime), s.delayMix, s.poly.toFloat(),
         ),
     )
 }
@@ -69,3 +77,9 @@ fun cutoffLabel(c: Float): String {
     val hz = cutoffHz(c)
     return if (c >= 0.999f) "Aberto" else if (hz >= 1000) "%.1fk".format(hz / 1000) else "${hz.toInt()}"
 }
+
+/** Tempo do delay: 0..1 -> 60 ms até 1500 ms (escala logarítmica). */
+fun delayMs(t: Float): Float = (60.0 * Math.pow(25.0, t.toDouble())).toFloat()
+
+/** Opções de polifonia oferecidas na tela. */
+val POLY_STEPS = listOf(8, 12, 16, 24, 32, 48, 64, 96, 128)

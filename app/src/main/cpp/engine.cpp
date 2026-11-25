@@ -21,7 +21,7 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static constexpr int kSlots = 8;
-static constexpr int kMaxVoices = 96;
+static constexpr int kMaxVoices = 128;   // memória pré-alocada; a polifonia de cada timbre limita o uso real
 static constexpr int kChunk = 1024;   // quadros processados por vez
 static constexpr float kPi = 3.14159265358979f;
 
@@ -153,6 +153,35 @@ struct Reverb {
     }
 };
 
+/** Delay estéreo simples (eco), com rampa no tempo para não estalar ao girar o knob. */
+struct Delay {
+    std::vector<float> buf; int w = 0, len = 0;
+    float timeSamples = 12000.f, curTime = 12000.f, mix = 0.f, feedback = 0.35f;
+    void init(float sr) { len = (int)(sr * 1.6f); buf.assign(len * 2, 0.f); w = 0; }
+    void set(float sr, float ms, float m) {
+        timeSamples = std::clamp(ms, 30.f, 1500.f) * sr / 1000.f;
+        mix = m;
+        feedback = 0.25f + 0.35f * m;     // mais intensidade = mais repetições
+    }
+    void process(float* io, int frames) {
+        if (mix < 0.01f || len == 0) return;
+        for (int i = 0; i < frames; ++i) {
+            curTime += (timeSamples - curTime) * 0.0005f;
+            float rp = (float)w - curTime;
+            while (rp < 0) rp += len;
+            int i0 = (int)rp; float fr = rp - i0; int i1 = (i0 + 1) % len;
+            float dl = buf[i0 * 2] + (buf[i1 * 2] - buf[i0 * 2]) * fr;
+            float dr = buf[i0 * 2 + 1] + (buf[i1 * 2 + 1] - buf[i0 * 2 + 1]) * fr;
+            float l = io[i * 2], r = io[i * 2 + 1];
+            buf[w * 2] = l + dr * feedback;          // ping-pong leve: cruza os lados
+            buf[w * 2 + 1] = r + dl * feedback;
+            io[i * 2] = l + dl * mix;
+            io[i * 2 + 1] = r + dr * mix;
+            if (++w >= len) w = 0;
+        }
+    }
+};
+
 // ------------------------------------------------------------------ canais
 
 struct Slot {
@@ -166,6 +195,10 @@ struct Slot {
     float eqLow = 0, eqMid = 0, eqHigh = 0, cutoff = 20000.f, comp = 0;
     float reverbSend = 0;
     int output = 0;            // modo 2 saídas: 0 = L e R, 1 = só L, 2 = só R
+    float velCurve = 0.5f;     // 0 = fixa, 0,5 = normal, 1 = muito sensível
+    int poly = 32;             // polifonia máxima (vozes)
+    float delayMs = 350.f, delayMix = 0.f;
+    Delay delay;
     Biquad lp, low, mid, high;
     Compressor compressor;
     int8_t active[128];
@@ -177,6 +210,7 @@ struct Slot {
         mid.peak(sr, 1000.f, 0.8f, eqMid);
         high.highShelf(sr, 6000.f, eqHigh);
         compressor.set(sr, comp);
+        delay.set(sr, delayMs, delayMix);
     }
 };
 
@@ -213,6 +247,12 @@ public:
     bool dualMono = false;            // L e R como duas saídas independentes (ex.: caixa e mesa)
     float outGain[2] = {1.f, 1.f}, curOut[2] = {1.f, 1.f};
     int deviceId = 0;                 // 0 = saída padrão do Android
+    int bufferMul = 2;                // buffer = N bursts (maior = mais estável em aparelhos fracos)
+    // gravação do master: fila circular que a thread de áudio enche e o Kotlin esvazia
+    std::vector<float> recBuf = std::vector<float>(1 << 20);
+    std::atomic<uint32_t> recW{0}, recR{0};
+    std::atomic<bool> recording{false};
+    std::atomic<uint32_t> recDropped{0};
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
     std::atomic<float> peaks[kSlots + 3];   // canais, master, saída L, saída R
@@ -243,7 +283,7 @@ public:
             r = b.openStream(stream);
         }
         if (r != oboe::Result::OK) { LOGE("openStream: %s", oboe::convertToText(r)); return false; }
-        stream->setBufferSizeInFrames(stream->getFramesPerBurst() * 2);
+        stream->setBufferSizeInFrames(stream->getFramesPerBurst() * bufferMul);
         {
             std::lock_guard<std::mutex> g(lock);
             sampleRate = stream->getSampleRate();
@@ -251,6 +291,7 @@ public:
             reverb.set(revSize, revTone, revLevel);
             for (auto& s : slots) {
                 if (s.font) tsf_set_output(s.font, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
+                s.delay.init((float)sampleRate);
                 s.updateDsp((float)sampleRate);
             }
         }
@@ -273,6 +314,34 @@ public:
     }
 
     static bool chMatch(const Slot& s, int ch) { return s.midiChannel < 0 || s.midiChannel == ch; }
+
+    /** 0..0,5: de volume fixo até resposta normal; 0,5..1: cada vez mais sensível (notas fracas mais baixas). */
+    static float velocityCurve(float raw, float c) {
+        if (c <= 0.5f) { float sens = c * 2.f; return 1.f - sens * (1.f - raw); }
+        float gamma = 1.f + (c - 0.5f) * 4.f;     // até 3
+        return std::pow(raw, gamma);
+    }
+
+    /** Polifonia: antes de uma nota nova, encerra rápido as vozes mais antigas que passarem do limite. */
+    static void limitVoices(tsf* f, int poly) {
+        tsf_voice* cand[kMaxVoices];
+        int n = 0;
+        for (int i = 0; i < f->voiceNum && n < kMaxVoices; ++i) {
+            tsf_voice& v = f->voices[i];
+            if (v.playingPreset == -1) continue;
+            if (v.ampenv.segment == TSF_SEGMENT_RELEASE && v.ampenv.parameters.release <= 0.011f) continue;  // já saindo
+            cand[n++] = &v;
+        }
+        int need = n - std::max(poly - 2, 1);    // folga: uma nota pode usar 2 vozes (estéreo)
+        if (need <= 0) return;
+        // primeiro as que já estão soltando, depois as mais antigas
+        std::sort(cand, cand + n, [](tsf_voice* a, tsf_voice* b) {
+            bool ra = a->ampenv.segment == TSF_SEGMENT_RELEASE, rb = b->ampenv.segment == TSF_SEGMENT_RELEASE;
+            if (ra != rb) return ra;
+            return a->playIndex < b->playIndex;
+        });
+        for (int i = 0; i < need && i < n; ++i) tsf_voice_endquick(f, cand[i]);
+    }
 
     /** Aplica o multiplicador de release nas vozes que acabaram de nascer. */
     static void scaleRelease(tsf* f, float mul) {
@@ -298,8 +367,8 @@ public:
                 int k = e.a + s.transpose;
                 if (k < 0 || k > 127) continue;
                 if (s.active[e.a] >= 0) tsf_channel_note_off(s.font, 0, s.active[e.a]);
-                float vel = 1.f - s.velSens * (1.f - raw);   // sensibilidade de velocity
-                tsf_channel_note_on(s.font, 0, k, std::max(vel, 0.01f));
+                limitVoices(s.font, s.poly);
+                tsf_channel_note_on(s.font, 0, k, std::max(velocityCurve(raw, s.velCurve), 0.01f));
                 scaleRelease(s.font, s.releaseMul);
                 s.active[e.a] = (int8_t)k;
             }
@@ -414,6 +483,7 @@ public:
                 s.mid.process(t, n);
                 s.high.process(t, n);
                 s.compressor.process(t, n);
+                s.delay.process(t, n);
                 // fader com rampa (sem estalos ao mexer rápido)
                 float g0 = s.curGain, g1 = s.gain, step = (g1 - g0) / n;
                 if (!dualMono) {
@@ -461,6 +531,15 @@ public:
             }
         }
         curOut[0] = outGain[0]; curOut[1] = outGain[1];
+        if (recording.load(std::memory_order_relaxed)) {
+            const uint32_t mask = (uint32_t)recBuf.size() - 1;
+            uint32_t w = recW.load(std::memory_order_relaxed), r = recR.load(std::memory_order_acquire);
+            uint32_t n = (uint32_t)frames * 2;
+            if (recBuf.size() - (w - r) >= n) {
+                for (uint32_t i = 0; i < n; ++i) recBuf[(w + i) & mask] = out[i];
+                recW.store(w + n, std::memory_order_release);
+            } else recDropped.fetch_add(1, std::memory_order_relaxed);
+        }
         storePeak(kSlots, mp);
         storePeak(kSlots + 1, op[0]);
         storePeak(kSlots + 2, op[1]);
@@ -543,14 +622,14 @@ Java_com_rarodoce_sf2player_Engine_nativeUnload(JNIEnv*, jobject, jint idx) {
     if (old) tsf_close(old);
 }
 
-// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb, saída (0 L+R, 1 L, 2 R)]
+// p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb, saída (0 L+R, 1 L, 2 R), curva velocity, delay ms, delay mix, polifonia]
 JNIEXPORT void JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx, jboolean enabled, jint preset,
         jint transpose, jint lowKey, jint highKey, jint channel, jfloatArray jp) {
     Slot* s = slotAt(idx);
-    if (!s || env->GetArrayLength(jp) < 11) return;
-    float p[11];
-    env->GetFloatArrayRegion(jp, 0, 11, p);
+    if (!s || env->GetArrayLength(jp) < 15) return;
+    float p[15];
+    env->GetFloatArrayRegion(jp, 0, 15, p);
 
     std::lock_guard<std::mutex> g(gEngine->lock);
     bool wasEnabled = s->enabled;
@@ -566,6 +645,10 @@ Java_com_rarodoce_sf2player_Engine_nativeSetSlot(JNIEnv* env, jobject, jint idx,
     s->comp = std::clamp(p[8], 0.f, 1.f);
     s->reverbSend = std::clamp(p[9], 0.f, 1.f);
     s->output = std::clamp((int)p[10], 0, 2);
+    s->velCurve = std::clamp(p[11], 0.f, 1.f);
+    s->delayMs = std::clamp(p[12], 30.f, 1500.f);
+    s->delayMix = std::clamp(p[13], 0.f, 1.f);
+    s->poly = std::clamp((int)p[14], 4, kMaxVoices);
     s->transpose = std::clamp((int)transpose, -48, 48);
     s->lowKey = std::clamp((int)lowKey, 0, 127);
     s->highKey = std::clamp((int)highKey, 0, 127);
@@ -701,6 +784,53 @@ Java_com_rarodoce_sf2player_Engine_nativePadStates(JNIEnv* env, jobject, jintArr
     jint v[kPads];
     for (int i = 0; i < kPads; ++i) v[i] = gEngine->pads[i].playing ? 1 : 0;   // leitura sem lock: só para a tela
     env->SetIntArrayRegion(out, 0, kPads, v);
+}
+
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeSetBufferMul(JNIEnv*, jobject, jint mul) {
+    if (!gEngine) return;
+    gEngine->bufferMul = std::clamp((int)mul, 1, 16);
+    if (gEngine->stream) gEngine->stream->setBufferSizeInFrames(gEngine->stream->getFramesPerBurst() * gEngine->bufferMul);
+}
+
+/** Liga/desliga a gravação do master (zera a fila ao ligar). */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeRecord(JNIEnv*, jobject, jboolean on) {
+    if (!gEngine) return;
+    if (on) { gEngine->recR.store(gEngine->recW.load()); gEngine->recDropped.store(0); }
+    gEngine->recording.store(on);
+}
+
+/** Copia o que foi gravado desde a última leitura (estéreo intercalado). Retorna quantas amostras. */
+JNIEXPORT jint JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeRecRead(JNIEnv* env, jobject, jfloatArray out) {
+    if (!gEngine) return 0;
+    auto& e = *gEngine;
+    const uint32_t mask = (uint32_t)e.recBuf.size() - 1;
+    uint32_t r = e.recR.load(std::memory_order_relaxed), w = e.recW.load(std::memory_order_acquire);
+    uint32_t n = std::min<uint32_t>(w - r, (uint32_t)env->GetArrayLength(out));
+    uint32_t first = std::min<uint32_t>(n, (uint32_t)e.recBuf.size() - (r & mask));
+    env->SetFloatArrayRegion(out, 0, first, e.recBuf.data() + (r & mask));
+    if (n > first) env->SetFloatArrayRegion(out, first, n - first, e.recBuf.data());
+    e.recR.store(r + n, std::memory_order_release);
+    return (jint)n;
+}
+
+/** Zera tudo que foi carregado (ao abrir o app de novo, nada fica do uso anterior). */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeResetAll(JNIEnv*, jobject) {
+    if (!gEngine) return;
+    std::vector<tsf*> old;
+    std::vector<std::vector<float>> oldPads(kPads);
+    {
+        std::lock_guard<std::mutex> g(gEngine->lock);
+        for (auto& s : gEngine->slots) { if (s.font) old.push_back(s.font); s.font = nullptr; }
+        for (int i = 0; i < kPads; ++i) {
+            Pad& p = gEngine->pads[i];
+            p.playing = false; p.frames = 0; oldPads[i].swap(p.data);
+        }
+    }
+    for (auto* f : old) tsf_close(f);
 }
 
 /** Lê e zera os picos: 8 canais, master, saída L, saída R. */

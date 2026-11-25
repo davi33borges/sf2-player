@@ -97,6 +97,8 @@ import com.rarodoce.sf2player.cutoffLabel
 import com.rarodoce.sf2player.faderDb
 import com.rarodoce.sf2player.noteName
 import com.rarodoce.sf2player.releaseMul
+import com.rarodoce.sf2player.delayMs
+import com.rarodoce.sf2player.POLY_STEPS
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -142,6 +144,11 @@ fun MainScreen(vm: MainViewModel) {
         }
         SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(12.dp))
     }
+
+    // botão voltar do celular: confirmar antes de sair (e oferecer salvar o preset)
+    var showExit by remember { mutableStateOf(false) }
+    BackHandler(enabled = configSlot < 0 && !showMaster) { showExit = true }
+    if (showExit) ExitDialog(vm) { showExit = false }
 
     if (showMidi) MidiDialog(vm) { showMidi = false }
     if (showScenes) ScenesDialog(vm) { showScenes = false }
@@ -204,6 +211,7 @@ private fun TopBar(vm: MainViewModel, tab: Int, onTab: (Int) -> Unit, onMidi: ()
             Spacer(Modifier.width(4.dp))
             Text(vm.connected?.deviceName ?: "Sem teclado", fontSize = 13.sp, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        RecordButton(vm)
         IconButton(onClick = vm::panic) { Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Danger) }
     }
 }
@@ -491,8 +499,9 @@ private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, m
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             KnobCell(vm, "Release", "%.2f×".format(releaseMul(s.release)), (s.release + 1) / 2,
                 { v -> upd { it.copy(release = v * 2 - 1) } }, color, Target(TargetType.SLOT_RELEASE, i), bipolar = true)
-            KnobCell(vm, "Velocity", if (s.velocity < 0.01f) "Fixa" else "${(s.velocity * 100).roundToInt()}%", s.velocity,
-                { v -> upd { it.copy(velocity = v) } }, color, Target(TargetType.SLOT_VELOCITY, i), default = 1f)
+            KnobCell(vm, "Velocity", velocityLabel(s.velocity), s.velocity,
+                { v -> upd { it.copy(velocity = if (kotlin.math.abs(v - 0.5f) < 0.02f) 0.5f else v) } },
+                color, Target(TargetType.SLOT_VELOCITY, i), default = 0.5f)
             KnobCell(vm, "Cutoff", cutoffLabel(s.cutoff), s.cutoff,
                 { v -> upd { it.copy(cutoff = v) } }, color, Target(TargetType.SLOT_CUTOFF, i), default = 1f)
             KnobCell(vm, "Compressor", if (s.comp < 0.01f) "Desl." else "${(s.comp * 100).roundToInt()}%", s.comp,
@@ -517,7 +526,35 @@ private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, m
                 color, Target(TargetType.SLOT_PAN, i), bipolar = true)
         }
         Text("O reverb deste canal vai para o reverb geral; tamanho e tom ficam no MASTER.", color = InkDim, fontSize = 10.sp)
+        HorizontalDivider(color = Line, modifier = Modifier.padding(vertical = 6.dp))
+        SectionTitle("DELAY")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            KnobCell(vm, "Tempo", "${delayMs(s.delayTime).roundToInt()} ms", s.delayTime, { v -> upd { it.copy(delayTime = v) } },
+                color, Target(TargetType.SLOT_DELAY_TIME, i), default = 0.6f)
+            KnobCell(vm, "Intensidade", if (s.delayMix < 0.01f) "Desl." else "${(s.delayMix * 100).roundToInt()}%", s.delayMix,
+                { v -> upd { it.copy(delayMix = v) } }, color, Target(TargetType.SLOT_DELAY_MIX, i))
+        }
+        HorizontalDivider(color = Line, modifier = Modifier.padding(vertical = 6.dp))
+        SectionTitle("POLIFONIA")
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            val idx = POLY_STEPS.indexOfFirst { it >= s.poly }.let { if (it < 0) POLY_STEPS.lastIndex else it }
+            Stepper(
+                label = "${s.poly} vozes",
+                onMinus = { upd { it.copy(poly = POLY_STEPS[(idx - 1).coerceAtLeast(0)]) } },
+                onPlus = { upd { it.copy(poly = POLY_STEPS[(idx + 1).coerceAtMost(POLY_STEPS.lastIndex)]) } },
+                onMinusLong = { upd { it.copy(poly = POLY_STEPS.first()) } },
+                onPlusLong = { upd { it.copy(poly = POLY_STEPS.last()) } },
+            )
+        }
+        Text("Menos vozes = menos esforço do processador. Em aparelhos fracos, use 16 a 24; pianos com pedal pedem mais.",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
     }
+}
+
+private fun velocityLabel(v: Float) = when {
+    v < 0.01f -> "Fixa"
+    kotlin.math.abs(v - 0.5f) < 0.01f -> "Normal"
+    else -> "${(v * 100).roundToInt()}%"
 }
 
 @Composable
@@ -802,6 +839,14 @@ private fun DeviceColumn(vm: MainViewModel, modifier: Modifier) {
             Text("${info[0]} Hz · buffer ${info[2]} amostras (≈ %.1f ms)".format(ms), color = InkDim, fontSize = 11.sp,
                 fontFamily = Mono, modifier = Modifier.padding(top = 8.dp))
         }
+        SectionTitle("ESTABILIDADE DO ÁUDIO", Modifier.padding(top = 12.dp))
+        Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(2 to "Mínimo atraso", 4 to "Equilibrado", 8 to "Aparelho fraco").forEach { (m, label) ->
+                SmallButton(label, Accent, Modifier.fillMaxWidth(), filled = vm.bufferMul == m) { vm.changeBufferMul(m) }
+            }
+        }
+        Text("Se o som estalar ou falhar, aumente. Cada passo acrescenta um pouco de atraso.",
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
         Text(
             "Para usar o teclado e a placa juntos no celular, use um hub USB (de preferência com fonte) no adaptador OTG.",
             color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp),
@@ -892,4 +937,59 @@ private fun ReverbColumn(vm: MainViewModel, c: Color, modifier: Modifier) {
         Text("Quanto cada instrumento manda para o reverb é o knob Reverb no painel de cada canal.",
             color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
     }
+}
+
+// ------------------------------------------------------------------ gravação e saída
+
+@Composable
+private fun RecordButton(vm: MainViewModel) {
+    val pulse by rememberInfiniteTransition(label = "rec").animateFloat(
+        0.35f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "r",
+    )
+    Row(
+        Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50))
+            .background(if (vm.recording) Danger.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.12f))
+            .border(1.dp, if (vm.recording) Danger else Line, RoundedCornerShape(50))
+            .clickable { vm.toggleRecording() }.padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(Danger.copy(alpha = if (vm.recording) pulse else 1f)))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            if (vm.recording) "%02d:%02d".format(vm.recSeconds / 60, vm.recSeconds % 60) else "Gravar",
+            color = Ink, fontSize = 12.sp, fontFamily = Mono, fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun ExitDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    var naming by remember { mutableStateOf(false) }
+    val exit: () -> Unit = { vm.stopRecording(); onDismiss(); activity?.finish() }
+    if (naming) {
+        NameDialog(
+            title = "Salvar preset e sair", hint = "Ex.: Culto domingo", initial = vm.currentScene ?: "",
+            info = "Se já existir um preset com esse nome, ele será atualizado.",
+            onDismiss = { naming = false },
+        ) { name -> vm.saveScene(name); exit() }
+        return
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sair do SonarKeys?") },
+        text = {
+            Text(
+                "O que não estiver salvo num preset será perdido. Na próxima vez, o app abre com a mesa vazia." +
+                    if (vm.recording) " A gravação em andamento será encerrada e salva." else "",
+            )
+        },
+        confirmButton = { TextButton(onClick = { naming = true }) { Text("Salvar preset e sair") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDismiss) { Text("Cancelar") }
+                TextButton(onClick = exit) { Text("Sair sem salvar", color = Danger) }
+            }
+        },
+    )
 }

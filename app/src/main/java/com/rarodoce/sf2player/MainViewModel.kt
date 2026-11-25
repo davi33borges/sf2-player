@@ -27,15 +27,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val io = Executors.newSingleThreadExecutor()
     private val fontsDir = File(app.filesDir, "soundfonts").apply { mkdirs() }
 
-    val slots = mutableStateListOf<SlotState>().apply { addAll(slotsFromJson(prefs.getString("slots", null))) }
-    val mappings = mutableStateListOf<Mapping>().apply { addAll(mappingsFromJson(prefs.getString("mappings", null))) }
-    var master by mutableFloatStateOf(prefs.getFloat("masterFader", 0.75f)); private set
-    var reverb by mutableStateOf(ReverbState.fromJson(prefs.getString("reverb", null)?.let { runCatching { org.json.JSONObject(it) }.getOrNull() })); private set
+    // A mesa sempre começa vazia: o que não for salvo num preset não fica guardado.
+    val slots = mutableStateListOf<SlotState>().apply { addAll(List(SLOT_COUNT) { SlotState() }) }
+    val mappings = mutableStateListOf<Mapping>()
+    var master by mutableFloatStateOf(0.75f); private set
+    var reverb by mutableStateOf(ReverbState()); private set
 
     // ---- pads de sample ----
     private val samplesDir = File(app.filesDir, "samples").apply { mkdirs() }
-    val pads = mutableStateListOf<PadState>().apply { addAll(padsFromJson(prefs.getString("pads", null))) }
-    var padsVolume by mutableFloatStateOf(prefs.getFloat("padsVolume", 0.75f)); private set
+    val pads = mutableStateListOf<PadState>().apply { addAll(List(PAD_COUNT) { PadState(color = it) }) }
+    var padsVolume by mutableFloatStateOf(0.75f); private set
     /** Pads tocando agora (para acender na tela). */
     val padPlaying = mutableStateListOf(*Array(PAD_COUNT) { false })
     /** Momento do último disparo de cada pad (pisca na tela). */
@@ -46,7 +47,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val timbresFile = File(app.filesDir, "timbres.json")
     val scenes = mutableStateListOf<Scene>().apply { addAll(listFromJson(scenesFile.takeIf { it.exists() }?.readText(), Scene::fromJson)) }
     val timbres = mutableStateListOf<Timbre>().apply { addAll(listFromJson(timbresFile.takeIf { it.exists() }?.readText(), Timbre::fromJson)) }
-    var currentScene by mutableStateOf(prefs.getString("currentScene", null)); private set
+    var currentScene by mutableStateOf<String?>(null); private set
+
+    /** Buffer de áudio em bursts: 2 = mínimo atraso, 4 = equilibrado, 8 = aparelho fraco. */
+    var bufferMul by mutableStateOf(prefs.getInt("bufferMul", 2)); private set
+
+    // ---- gravação do master ----
+    var recording by mutableStateOf(false); private set
+    var recSeconds by mutableStateOf(0); private set
+    @Volatile private var recThread: Thread? = null
 
     /** Nível exibido nos medidores (0..1, já com queda suave): 8 canais + master. */
     val meters = mutableStateListOf(*Array(SLOT_COUNT + 3) { 0f })   // canais, master, saída L, saída R
@@ -79,6 +88,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         audioOk = Engine.nativeStart()
+        Engine.nativeResetAll()          // nada do uso anterior fica carregado
+        for (i in 0 until SLOT_COUNT) Engine.apply(i, slots[i])
+        Engine.nativePanic()
+        Engine.nativeSetBufferMul(bufferMul)
+        prefs.edit().remove("slots").remove("mappings").remove("masterFader").remove("reverb")
+            .remove("pads").remove("padsVolume").remove("currentScene").apply()
         Engine.nativeSetMaster(faderGain(master))
         Engine.nativeSetReverb(reverb.size, reverb.tone, reverb.level)
         applyOutputs()
@@ -87,15 +102,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         routeToPreferredDevice()
         midi.preferredKey = prefs.getString("midiSource", null)
         midi.start()
-        // recarrega os instrumentos salvos
-        slots.toList().forEachIndexed { i, s ->
-            if (s.path != null) loadSlotState(i, s)
-        }
         Engine.nativePadsVolume(faderGain(padsVolume))
-        pads.toList().forEachIndexed { i, p ->
-            Engine.applyPad(i, p)
-            if (p.path != null) loadPadState(i, p)
-        }
+        pads.toList().forEachIndexed { i, p -> Engine.applyPad(i, p) }
+        cleanupFonts()                   // apaga .sf2 e samples que não estão em nenhum preset ou timbre salvo
     }
 
     // ---------------- MIDI ----------------
@@ -163,6 +172,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_CUTOFF -> if (isOn && s != null) update(t.slot) { it.copy(cutoff = v) }
             TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
             TargetType.SLOT_REVERB -> if (isOn && s != null) update(t.slot) { it.copy(reverb = v) }
+            TargetType.SLOT_DELAY_MIX -> if (isOn && s != null) update(t.slot) { it.copy(delayMix = v) }
+            TargetType.SLOT_DELAY_TIME -> if (isOn && s != null) update(t.slot) { it.copy(delayTime = v) }
             TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)
             TargetType.OUT_L_VOLUME -> if (isOn) changeOutputs(outputs.copy(volL = v))
             TargetType.OUT_R_VOLUME -> if (isOn) changeOutputs(outputs.copy(volR = v))
@@ -219,7 +230,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun saveMappings() {
         mapSnapshot = mappings.toList()
-        prefs.edit().putString("mappings", mappingsToJson(mappings)).apply()
     }
 
     // ---------------- instrumentos ----------------
@@ -396,7 +406,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val idx = scenes.indexOfFirst { it.name.equals(clean, true) }
         if (idx >= 0) scenes[idx] = scene else scenes.add(scene)
         persistScenes()
-        currentScene = clean; prefs.edit().putString("currentScene", clean).apply()
+        currentScene = clean
         toast = "Preset \"$clean\" salvo"
     }
 
@@ -411,14 +421,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             changePadsVolume(scene.padsVolume)
         }
         mappings.clear(); mappings.addAll(scene.mappings); saveMappings()
-        currentScene = scene.name; prefs.edit().putString("currentScene", scene.name).apply()
+        currentScene = scene.name
         toast = "Preset \"${scene.name}\" carregado"
     }
 
     fun deleteScene(scene: Scene) {
         scenes.remove(scene)
         persistScenes()
-        if (currentScene == scene.name) { currentScene = null; prefs.edit().remove("currentScene").apply() }
+        if (currentScene == scene.name) currentScene = null
         cleanupFonts()
     }
 
@@ -547,14 +557,93 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         cleanupFonts()
     }
 
-    private val saveTask = Runnable {
-        prefs.edit()
-            .putString("slots", slotsToJson(slots))
-            .putFloat("masterFader", master)
-            .putString("reverb", reverb.toJson().toString())
-            .putString("pads", listToJson(pads.toList()) { it.toJson() })
-            .putFloat("padsVolume", padsVolume)
-            .apply()
+    // A sessão não é gravada sozinha: só presets, timbres e ajustes do equipamento ficam salvos.
+    private val saveTask = Runnable { }
+
+    fun changeBufferMul(m: Int) {
+        bufferMul = m
+        Engine.nativeSetBufferMul(m)
+        prefs.edit().putInt("bufferMul", m).apply()
+        refreshStreamInfo()
+    }
+
+    // ---------------- gravação do master ----------------
+
+    fun toggleRecording() = if (recording) stopRecording() else startRecording()
+
+    private fun startRecording() {
+        val ctx = getApplication<Application>()
+        val tmp = File(ctx.cacheDir, "gravacao.wav")
+        val rate = Engine.nativeStreamInfo()[0].takeIf { it > 0 } ?: 48000
+        recording = true; recSeconds = 0
+        Engine.nativeRecord(true)
+        recThread = Thread({
+            val buf = FloatArray(1 shl 16)
+            val bytes = java.nio.ByteBuffer.allocate(buf.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            var total = 0L
+            java.io.RandomAccessFile(tmp, "rw").use { f ->
+                f.setLength(0)
+                f.write(ByteArray(44))                    // cabeçalho WAV preenchido no fim
+                var lastTick = 0L
+                while (true) {
+                    val n = Engine.nativeRecRead(buf)
+                    if (n > 0) { writePcm(f, buf, n, bytes); total += n }
+                    else if (!recording) break          // parou e a fila já esvaziou
+                    else Thread.sleep(25)
+                    val secs = total / 2 / rate
+                    if (secs != lastTick) { lastTick = secs; main.post { recSeconds = secs.toInt() } }
+                }
+                writeWavHeader(f, total * 2, rate)
+            }
+            saveRecording(tmp)
+        }, "gravacao").apply { priority = Thread.NORM_PRIORITY + 1; start() }
+    }
+
+    fun stopRecording() {
+        if (!recording) return
+        recording = false
+        Engine.nativeRecord(false)
+    }
+
+    private fun writePcm(f: java.io.RandomAccessFile, buf: FloatArray, n: Int, bytes: java.nio.ByteBuffer) {
+        bytes.clear()
+        for (i in 0 until n) bytes.putShort((buf[i].coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+        f.write(bytes.array(), 0, n * 2)
+    }
+
+    private fun writeWavHeader(f: java.io.RandomAccessFile, dataBytes: Long, rate: Int) {
+        val h = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        h.put("RIFF".toByteArray()); h.putInt((36 + dataBytes).toInt()); h.put("WAVE".toByteArray())
+        h.put("fmt ".toByteArray()); h.putInt(16); h.putShort(1); h.putShort(2); h.putInt(rate)
+        h.putInt(rate * 4); h.putShort(4); h.putShort(16)
+        h.put("data".toByteArray()); h.putInt(dataBytes.toInt())
+        f.seek(0); f.write(h.array())
+    }
+
+    /** Copia a gravação para Música/SonarKeys (ou a pasta de música do app no Android 9 e anteriores). */
+    private fun saveRecording(tmp: File) {
+        val ctx = getApplication<Application>()
+        val name = "SonarKeys_" + java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(java.util.Date()) + ".wav"
+        val where = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Audio.Media.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                    put(android.provider.MediaStore.Audio.Media.RELATIVE_PATH, "Music/SonarKeys")
+                }
+                val uri = ctx.contentResolver.insert(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)!!
+                ctx.contentResolver.openOutputStream(uri)!!.use { out -> tmp.inputStream().use { it.copyTo(out, 1 shl 16) } }
+                "Música/SonarKeys"
+            } else {
+                val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)!!
+                tmp.copyTo(File(dir, name), overwrite = true)
+                dir.absolutePath
+            }
+        }
+        tmp.delete()
+        main.post {
+            toast = where.fold({ "Gravação salva em $it" }, { "Não consegui salvar a gravação" })
+        }
     }
 
     private fun scheduleSave() {
@@ -563,7 +652,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        saveTask.run()
+        stopRecording()
+        Engine.nativeResetAll()
         midi.release()
         audioOuts.stop()
         Engine.nativeStop()
