@@ -94,6 +94,7 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     PANIC("Parar todos os sons", false),
     PAD_TRIGGER("Disparar pad", false),
     PADS_STOP("Parar todos os pads", false),
+    PADS_VOLUME("Volume dos pads", true),
 }
 
 data class Target(val type: TargetType, val slot: Int = -1) {

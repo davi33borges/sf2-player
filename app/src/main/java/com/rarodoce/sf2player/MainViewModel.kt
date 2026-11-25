@@ -179,6 +179,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_PRESET_PREV -> if (isOn && value > 0 && s?.loaded == true) setPreset(t.slot, (s.preset - 1 + s.presets.size) % s.presets.size)
             TargetType.PANIC -> if (isOn && value > 0) panic()
             TargetType.PADS_STOP -> if (isOn && value > 0) Engine.nativePadsStop()
+            TargetType.PADS_VOLUME -> if (isOn) changePadsVolume(v)
             TargetType.PAD_TRIGGER -> Unit   // tratado direto na thread de MIDI
         }
     }
