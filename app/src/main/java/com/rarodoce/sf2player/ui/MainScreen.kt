@@ -256,7 +256,7 @@ private fun Mixer(vm: MainViewModel, modifier: Modifier, onConfig: (Int) -> Unit
 
 @Composable
 private fun ChannelStrip(vm: MainViewModel, i: Int, s: SlotState, modifier: Modifier, onConfig: () -> Unit, onPick: () -> Unit) {
-    val color = SlotColors[i]
+    val color = StripColor
     val on = s.loaded && s.enabled
     Column(
         modifier.clip(RoundedCornerShape(12.dp)).background(Panel)
@@ -365,7 +365,7 @@ private fun dbLabel(db: Float) = (if (db > 0.05f) "+" else "") + "%.1f dB".forma
 @Composable
 private fun ChannelConfig(vm: MainViewModel, i: Int, onClose: () -> Unit, onPick: () -> Unit) {
     val s = vm.slots[i]
-    val color = SlotColors[i]
+    val color = StripColor
     var menu by remember { mutableStateOf(false) }
     var saveTimbre by remember { mutableStateOf(false) }
     var listTimbres by remember { mutableStateOf(false) }
@@ -616,7 +616,7 @@ private fun MidiDialog(vm: MainViewModel, onClose: () -> Unit) {
                 }
                 itemsIndexed(vm.mappings.toList()) { _, m ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(if (m.target.slot >= 0) SlotColors[m.target.slot] else Ink))
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(if (m.target.isPad) SlotColors[m.target.slot] else if (m.target.slot >= 0) StripColor else Ink))
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(m.target.describe(), color = Ink, fontSize = 14.sp)

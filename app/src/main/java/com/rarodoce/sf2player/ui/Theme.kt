@@ -25,7 +25,10 @@ val AppGradient = Brush.linearGradient(
     1f to Color(0xFF2A5BB5),
 )
 
-/** Uma cor por instrumento/pad, como nos pads do print. */
+/** Cor única de todas as faixas da mesa. */
+val StripColor = Color(0xFF4FD1FF)
+
+/** Cores que dá para escolher em cada pad, como nos pads do print. */
 val SlotColors = listOf(
     Color(0xFFFF3D6E), Color(0xFFFF7A6B), Color(0xFF9B6BFF), Color(0xFFC9C6D6),
     Color(0xFF4FD1FF), Color(0xFFFFD166), Color(0xFF5EE6A8), Color(0xFFFF9F43),
