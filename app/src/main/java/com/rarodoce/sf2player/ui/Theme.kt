@@ -6,8 +6,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-// Visual "vidro sobre degradê": fundo magenta → roxo → azul, painéis translúcidos e texto branco.
-val Bg = Color(0xFF1A0E2E)                          // texto sobre cores fortes
+// Visual "vidro sobre degradê": fundo em tons de azul médio, painéis translúcidos e texto branco.
+val Bg = Color(0xFF0F1E3D)                          // texto sobre cores fortes
 val Well = Color.Black.copy(alpha = 0.18f)           // áreas internas mais escuras
 val Panel = Color.White.copy(alpha = 0.10f)          // vidro
 val PanelHi = Color.White.copy(alpha = 0.17f)
@@ -17,13 +17,12 @@ val InkDim = Color.White.copy(alpha = 0.66f)
 val Accent = Color(0xFFFFD166)
 val Ok = Color(0xFF5EE6A8)
 val Danger = Color(0xFFFF6B81)
-val Sheet = Color(0xF5301852)                        // painéis que abrem por cima
+val Sheet = Color(0xF5234A8C)                        // painéis que abrem por cima
 
 val AppGradient = Brush.linearGradient(
-    0f to Color(0xFFE3245C),
-    0.38f to Color(0xFFB12A8E),
-    0.72f to Color(0xFF6A2FB6),
-    1f to Color(0xFF3A3FC8),
+    0f to Color(0xFF3F86DE),
+    0.45f to Color(0xFF3270CC),
+    1f to Color(0xFF2A5BB5),
 )
 
 /** Uma cor por instrumento/pad, como nos pads do print. */
@@ -37,10 +36,10 @@ fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = Color.White, onPrimary = Bg,
-            secondary = Ok, background = Color(0xFF2A1548), onBackground = Ink,
-            surface = Color(0xFF2E1850), onSurface = Ink, surfaceVariant = Color(0xFF3A2160), onSurfaceVariant = InkDim,
-            outline = Line, surfaceContainerHigh = Color(0xFF341B5A), surfaceContainer = Color(0xFF2E1850),
-            surfaceContainerHighest = Color(0xFF3D2266), surfaceContainerLow = Color(0xFF2A1548),
+            secondary = Ok, background = Color(0xFF244E96), onBackground = Ink,
+            surface = Color(0xFF26519A), onSurface = Ink, surfaceVariant = Color(0xFF2E5CA8), onSurfaceVariant = InkDim,
+            outline = Line, surfaceContainerHigh = Color(0xFF2A56A2), surfaceContainer = Color(0xFF26519A),
+            surfaceContainerHighest = Color(0xFF3062B0), surfaceContainerLow = Color(0xFF244E96),
         ),
         content = content,
     )
