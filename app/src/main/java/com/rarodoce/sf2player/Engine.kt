@@ -9,6 +9,8 @@ object Engine {
     /** Carrega o .sf2 no slot e devolve os nomes dos presets (null = arquivo inválido). */
     external fun nativeLoad(slot: Int, path: String, preset: Int): Array<String>?
     external fun nativeUnload(slot: Int)
+    /** Lê antes do armazenamento as amostras do preset (a primeira nota sai sem atraso). */
+    external fun nativeWarm(slot: Int, preset: Int)
     /** p = [ganho, pan, release×, velocity, grave dB, médio dB, agudo dB, cutoff Hz, compressor, envio reverb] */
     external fun nativeSetSlot(
         slot: Int, enabled: Boolean, preset: Int, transpose: Int,

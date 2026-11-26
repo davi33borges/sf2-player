@@ -247,7 +247,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         scheduleSave()
     }
 
-    fun setPreset(i: Int, p: Int) = update(i) { it.copy(preset = p) }
+    fun setPreset(i: Int, p: Int) {
+        update(i) { it.copy(preset = p) }
+        io.execute { Engine.nativeWarm(i, p) }
+    }
 
     fun setMasterVolume(v: Float) {
         master = v.coerceIn(0f, 1f)
@@ -327,6 +330,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         io.execute {
             val base = name.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9._ -]"), "_").take(60)
             var dest = File(fontsDir, "${base}_$size.sf2")
+            if (size >= 2_000_000_000L) {
+                main.post { slots[i] = slots[i].copy(loading = false, error = "Arquivo maior que 2 GB") }
+                return@execute
+            }
+            if (size > 0 && fontsDir.usableSpace < size + 100_000_000L && !(dest.exists() && dest.length() == size)) {
+                main.post { slots[i] = slots[i].copy(loading = false, error = "Sem espaço no aparelho para copiar") }
+                return@execute
+            }
             if (size < 0 || !dest.exists() || dest.length() != size) {
                 val tmp = File(fontsDir, "import_${System.nanoTime()}.tmp")
                 val ok = runCatching {

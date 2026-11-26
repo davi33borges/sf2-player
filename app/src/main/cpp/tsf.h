@@ -330,7 +330,10 @@ typedef char tsf_char20[20];
 struct tsf
 {
 	struct tsf_preset* presets;
-	float* fontSamples;
+	// SonarKeys: amostras em 16 bits, lidas direto do arquivo mapeado na memória (mmap)
+	const short* fontSamples;
+	void* mapBase;
+	size_t mapLen;
 	struct tsf_voice* voices;
 	struct tsf_channels* channels;
 
@@ -972,7 +975,8 @@ static int tsf_decode_sf3_samples(const void* rawBuffer, float** pFloatBuffer, u
 }
 #endif
 
-static int tsf_load_samples(void** pRawBuffer, float** pFloatBuffer, unsigned int* pSmplCount, struct tsf_riffchunk *chunkSmpl, struct tsf_stream* stream)
+static int tsf_zero_copy_memory = 0;
+static int tsf_load_samples(void** pRawBuffer, short** pFloatBuffer, unsigned int* pSmplCount, struct tsf_riffchunk *chunkSmpl, struct tsf_stream* stream)
 {
 	#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
 	// With OGG Vorbis support we cannot pre-allocate the memory for tsf_decode_sf3_samples
@@ -990,14 +994,18 @@ static int tsf_load_samples(void** pRawBuffer, float** pFloatBuffer, unsigned in
 	*pSmplCount = resNum;
 	return (*pFloatBuffer ? 1 : 0);
 	#else
-	// Inline convert the samples from short to float
-	float *res, *out; const short *in;
+	// SonarKeys: mantém as amostras em 16 bits (metade da memória) e, quando o arquivo está
+	// mapeado (tsf_zero_copy_memory), nem copia: aponta direto para o arquivo.
 	(void)pRawBuffer;
 	*pSmplCount = chunkSmpl->size / (unsigned int)sizeof(short);
-	*pFloatBuffer = (float*)TSF_MALLOC(*pSmplCount * sizeof(float));
+	if (tsf_zero_copy_memory)
+	{
+		struct tsf_stream_memory* m = (struct tsf_stream_memory*)stream->data;
+		*pFloatBuffer = (short*)(m->buffer + m->pos);
+		return stream->skip(stream->data, chunkSmpl->size);
+	}
+	*pFloatBuffer = (short*)TSF_MALLOC(chunkSmpl->size);
 	if (!*pFloatBuffer || !stream->read(stream->data, *pFloatBuffer, chunkSmpl->size)) return 0;
-	for (res = *pFloatBuffer, out = res + *pSmplCount, in = (short*)res + *pSmplCount; out != res;)
-		*(--out) = (float)(*(--in) / 32767.0);
 	return 1;
 	#endif
 }
@@ -1220,7 +1228,7 @@ static void tsf_voice_calcpitchratio(struct tsf_voice* v, float pitchShift, floa
 static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, int numSamples)
 {
 	struct tsf_region* region = v->region;
-	float* input = f->fontSamples;
+	const short* input = f->fontSamples;
 	float* outL = outputBuffer;
 	float* outR = (f->outputmode == TSF_STEREO_UNWEAVED ? outL + numSamples : TSF_NULL);
 
@@ -1292,7 +1300,7 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 					unsigned int pos = (unsigned int)tmpSourceSamplePosition, nextPos = (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1);
 
 					// Simple linear interpolation.
-					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha);
+					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha) * (1.0f / 32767.0f);
 
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, val);
@@ -1313,7 +1321,7 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 					unsigned int pos = (unsigned int)tmpSourceSamplePosition, nextPos = (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1);
 
 					// Simple linear interpolation.
-					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha);
+					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha) * (1.0f / 32767.0f);
 
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, val);
@@ -1333,7 +1341,7 @@ static void tsf_voice_render(tsf* f, struct tsf_voice* v, float* outputBuffer, i
 					unsigned int pos = (unsigned int)tmpSourceSamplePosition, nextPos = (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1);
 
 					// Simple linear interpolation.
-					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha);
+					float alpha = (float)(tmpSourceSamplePosition - pos), val = (input[pos] * (1.0f - alpha) + input[nextPos] * alpha) * (1.0f / 32767.0f);
 
 					// Low-pass filter.
 					if (tmpLowpass.active) val = tsf_voice_lowpass_process(&tmpLowpass, val);
@@ -1365,7 +1373,7 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	struct tsf_riffchunk chunkList;
 	struct tsf_hydra hydra;
 	void* rawBuffer = TSF_NULL;
-	float* floatBuffer = TSF_NULL;
+	short* floatBuffer = TSF_NULL;
 	tsf_u32 smplCount = 0;
 
 	if (!tsf_riffchunk_read(TSF_NULL, &chunkHead, stream) || !TSF_FourCCEquals(chunkHead.id, "sfbk"))
@@ -1451,7 +1459,7 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	TSF_FREE(hydra.phdrs); TSF_FREE(hydra.pbags); TSF_FREE(hydra.pmods);
 	TSF_FREE(hydra.pgens); TSF_FREE(hydra.insts); TSF_FREE(hydra.ibags);
 	TSF_FREE(hydra.imods); TSF_FREE(hydra.igens); TSF_FREE(hydra.shdrs);
-	TSF_FREE(rawBuffer);   TSF_FREE(floatBuffer);
+	TSF_FREE(rawBuffer);   if (!tsf_zero_copy_memory) TSF_FREE(floatBuffer);
 	return res;
 }
 
@@ -1483,7 +1491,7 @@ TSFDEF void tsf_close(tsf* f)
 		struct tsf_preset *preset = f->presets, *presetEnd = preset + f->presetNum;
 		for (; preset != presetEnd; preset++) TSF_FREE(preset->regions);
 		TSF_FREE(f->presets);
-		TSF_FREE(f->fontSamples);
+		if (f->mapBase) munmap(f->mapBase, f->mapLen); else TSF_FREE((void*)f->fontSamples);
 		TSF_FREE(f->refCount);
 	}
 	TSF_FREE(f->channels);

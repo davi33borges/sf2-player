@@ -2,6 +2,11 @@
 // Cadeia de cada canal: SF2 (TinySoundFont) -> cutoff -> EQ 3 bandas -> compressor -> fader -> mix.
 // Oboe entrega o áudio com baixa latência.
 
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <climits>
 #define TSF_IMPLEMENTATION
 #include "tsf.h"
 
@@ -569,6 +574,57 @@ public:
 };
 
 static Engine* gEngine = nullptr;
+static std::mutex gLoadMutex;   // carregar, aquecer e fechar arquivos (nunca na thread de áudio)
+
+/**
+ * Abre o .sf2 mapeando o arquivo na memória (mmap): as amostras são lidas direto do armazenamento
+ * conforme o uso, e o Android pode liberar essas páginas sem fechar o app. Assim cabem SF2 de 1 GB ou mais.
+ */
+static tsf* loadMapped(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return nullptr;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size >= INT_MAX) { close(fd); return nullptr; }
+    size_t len = (size_t)st.st_size;
+    void* base = mmap(nullptr, len, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) { LOGE("mmap falhou (%zu bytes)", len); return nullptr; }
+    madvise(base, len, MADV_RANDOM);
+    tsf_zero_copy_memory = 1;
+    tsf* f = tsf_load_memory(base, (int)len);
+    tsf_zero_copy_memory = 0;
+    if (!f) { munmap(base, len); return nullptr; }
+    f->mapBase = base; f->mapLen = len;
+    return f;
+}
+
+/** Lê antes as amostras de um preset, para a primeira nota não esperar o armazenamento. */
+static void warmPreset(int idx, tsf* f, int preset) {
+    if (!f || !f->mapBase || preset < 0 || preset >= f->presetNum) return;
+    const long pageSz = sysconf(_SC_PAGESIZE);
+    const char* mapStart = (const char*)f->mapBase;
+    const char* mapEnd = mapStart + f->mapLen;
+    const char* samples = (const char*)f->fontSamples;
+    volatile char sink = 0;
+    int pages = 0;
+    struct tsf_preset& p = f->presets[preset];
+    for (int r = 0; r < p.regionNum; ++r) {
+        const struct tsf_region& rg = p.regions[r];
+        const char* a = samples + (size_t)rg.offset * 2;
+        const char* b = samples + ((size_t)rg.end + 1) * 2;
+        if (a < mapStart) a = mapStart;
+        if (b > mapEnd) b = mapEnd;
+        if (b <= a) continue;
+        uintptr_t pa = (uintptr_t)a & ~(uintptr_t)(pageSz - 1);
+        madvise((void*)pa, (size_t)(b - (const char*)pa), MADV_WILLNEED);
+        for (const char* q = (const char*)pa; q < b; q += pageSz) {
+            sink = sink + *q;
+            // se o timbre foi trocado ou removido no meio, para
+            if ((++pages & 255) == 0 && gEngine && gEngine->slots[idx].font != f) return;
+        }
+    }
+    (void)sink;
+}
 
 static Slot* slotAt(int i) {
     if (!gEngine || i < 0 || i >= kSlots) return nullptr;
@@ -592,7 +648,8 @@ JNIEXPORT jobjectArray JNICALL
 Java_com_rarodoce_sf2player_Engine_nativeLoad(JNIEnv* env, jobject, jint idx, jstring jpath, jint preset) {
     if (!slotAt(idx)) return nullptr;
     const char* path = env->GetStringUTFChars(jpath, nullptr);
-    tsf* f = tsf_load_filename(path);
+    std::lock_guard<std::mutex> lk(gLoadMutex);
+    tsf* f = loadMapped(path);          // pode demorar: fora do lock do áudio
     env->ReleaseStringUTFChars(jpath, path);
     if (!f) return nullptr;
 
@@ -621,6 +678,7 @@ Java_com_rarodoce_sf2player_Engine_nativeLoad(JNIEnv* env, jobject, jint idx, js
         gEngine->applySlot(s);
     }
     if (old) tsf_close(old);
+    warmPreset(idx, f, preset);         // lê do armazenamento as amostras do preset escolhido
     return names;
 }
 
@@ -633,6 +691,7 @@ Java_com_rarodoce_sf2player_Engine_nativeUnload(JNIEnv*, jobject, jint idx) {
         old = gEngine->slots[idx].font;
         gEngine->slots[idx].font = nullptr;
     }
+    std::lock_guard<std::mutex> lk(gLoadMutex);   // espera o aquecimento parar antes de fechar o arquivo
     if (old) tsf_close(old);
 }
 
@@ -844,7 +903,18 @@ Java_com_rarodoce_sf2player_Engine_nativeResetAll(JNIEnv*, jobject) {
             p.playing = false; p.frames = 0; oldPads[i].swap(p.data);
         }
     }
+    std::lock_guard<std::mutex> lk(gLoadMutex);
     for (auto* f : old) tsf_close(f);
+}
+
+/** Aquece (lê do armazenamento) as amostras do preset atual do canal. */
+JNIEXPORT void JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeWarm(JNIEnv*, jobject, jint idx, jint preset) {
+    if (!slotAt(idx)) return;
+    std::lock_guard<std::mutex> lk(gLoadMutex);
+    tsf* f;
+    { std::lock_guard<std::mutex> g(gEngine->lock); f = gEngine->slots[idx].font; }
+    warmPreset(idx, f, preset);
 }
 
 /** Maior carga do áudio desde a última leitura (0..1+). */
