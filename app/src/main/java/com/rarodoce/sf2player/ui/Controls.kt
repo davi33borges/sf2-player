@@ -193,7 +193,7 @@ fun Knob(
 /** Pílula "MIDI": toque para aprender, toque longo para apagar o mapeamento. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun LearnChip(vm: MainViewModel, target: Target, color: Color, modifier: Modifier = Modifier) {
+fun LearnChip(vm: MainViewModel, target: Target, color: Color, modifier: Modifier = Modifier, prefix: String? = null) {
     val mapping = vm.mappingFor(target)
     val learning = (vm.learn as? LearnMode.Control)?.target == target
     val pulse by rememberInfiniteTransition(label = "chip").animateFloat(
@@ -201,7 +201,7 @@ fun LearnChip(vm: MainViewModel, target: Target, color: Color, modifier: Modifie
     )
     val bg = when { learning -> Accent.copy(alpha = pulse); mapping != null -> color.copy(alpha = 0.2f); else -> Color.Transparent }
     Text(
-        text = when { learning -> "•••"; mapping != null -> mapping.shortLabel(); else -> "MIDI" },
+        text = (prefix?.let { "$it " } ?: "") + when { learning -> "•••"; mapping != null -> mapping.shortLabel(); else -> "MIDI" },
         color = when { learning -> Bg; mapping != null -> color; else -> InkDim },
         fontSize = 9.sp, fontFamily = Mono, fontWeight = FontWeight.Bold, maxLines = 1,
         textAlign = TextAlign.Center,

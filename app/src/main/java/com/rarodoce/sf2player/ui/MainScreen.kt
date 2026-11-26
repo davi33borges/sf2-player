@@ -873,16 +873,16 @@ private fun DeviceRow(title: String, subtitle: String, selected: Boolean, highli
 private fun OutputsColumn(vm: MainViewModel, modifier: Modifier) {
     val o = vm.outputs
     Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp)) {
-        SectionTitle("SAÍDAS")
-        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // título e modo na mesma linha: sobra mais altura para os faders em telas pequenas
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SectionTitle("SAÍDAS", Modifier.weight(1f))
             SmallButton("Estéreo", Accent, filled = !o.dual) { vm.changeOutputs(o.copy(dual = false)) }
-            SmallButton("2 saídas independentes", Accent, filled = o.dual) { vm.changeOutputs(o.copy(dual = true)) }
+            SmallButton("2 independentes", Accent, filled = o.dual) { vm.changeOutputs(o.copy(dual = true)) }
         }
         Text(
-            if (o.dual) "L e R recebem a mistura completa (mono), cada uma com seu volume. Ex.: L na caixa, R na mesa de som. " +
-                "Em cada canal dá para mandar só para L ou só para R."
-            else "Som estéreo normal. Os faders ajustam o volume de cada lado.",
-            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+            if (o.dual) "L e R recebem a mistura completa, cada uma com seu volume (ex.: L na caixa, R na mesa)."
+            else "Som estéreo normal: cada fader ajusta um lado.",
+            color = InkDim, fontSize = 10.sp, maxLines = 2, modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
         )
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutputStrip(vm, "L", "Saída 1", o.volL, o.muteL, SLOT_COUNT + 1, TargetType.OUT_L_VOLUME, TargetType.OUT_L_MUTE,
@@ -895,6 +895,7 @@ private fun OutputsColumn(vm: MainViewModel, modifier: Modifier) {
     }
 }
 
+/** Faixa de uma saída: fader com toda a altura livre; botões e mapeamentos numa linha embaixo. */
 @Composable
 private fun OutputStrip(
     vm: MainViewModel, side: String, label: String, vol: Float, muted: Boolean, meter: Int,
@@ -902,40 +903,37 @@ private fun OutputStrip(
 ) {
     val c = Color(0xFF8FB8FF)
     Column(modifier.clip(RoundedCornerShape(10.dp)).background(Panel).padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("$side · $label", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp)
-        Row(Modifier.weight(1f).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            VerticalFader(vol, onVol, c, level = { vm.meters[meter] }, modifier = Modifier.weight(1f).fillMaxHeight())
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(faderDb(vol), color = Ink, fontSize = 11.sp, fontFamily = Mono)
-                Text("volume", color = InkDim, fontSize = 9.sp)
-                LearnChip(vm, Target(volTarget), c)
-                Spacer(Modifier.height(8.dp))
-                Text("mute", color = InkDim, fontSize = 9.sp)
-                LearnChip(vm, Target(muteTarget), c)
-            }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("$side · $label", color = Ink, fontWeight = FontWeight.Black, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Text(faderDb(vol), color = Ink, fontSize = 11.sp, fontFamily = Mono)
         }
-        SmallButton(if (muted) "MUTE" else "ON", if (muted) Danger else c, Modifier.fillMaxWidth().padding(top = 4.dp),
-            filled = !muted, onClick = onMute)
+        VerticalFader(vol, onVol, c, level = { vm.meters[meter] }, modifier = Modifier.weight(1f).fillMaxWidth().heightIn(min = 60.dp))
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            SmallButton(if (muted) "MUTE" else "ON", if (muted) Danger else c, Modifier.weight(1f), filled = !muted, onClick = onMute)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            LearnChip(vm, Target(volTarget), c, Modifier.weight(1f), prefix = "vol")
+            LearnChip(vm, Target(muteTarget), c, Modifier.weight(1f), prefix = "mute")
+        }
     }
 }
 
 @Composable
 private fun ReverbColumn(vm: MainViewModel, c: Color, modifier: Modifier) {
     val r = vm.reverb
-    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp).verticalScroll(rememberScrollState())) {
+    Column(modifier.clip(RoundedCornerShape(12.dp)).background(Well).padding(8.dp)) {
         SectionTitle("REVERB GERAL")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.Top) {
             KnobCell(vm, "Tamanho", "${(r.size * 100).roundToInt()}%", r.size, { v -> vm.changeReverb(vm.reverb.copy(size = v)) },
                 c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
             KnobCell(vm, "Tom", if (r.tone < 0.35f) "Escuro" else if (r.tone > 0.7f) "Brilhante" else "Médio", r.tone,
                 { v -> vm.changeReverb(vm.reverb.copy(tone = v)) }, c, Target(TargetType.REVERB_LEVEL), default = 0.6f, showLearn = false)
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             KnobCell(vm, "Volume", "${(r.level * 100).roundToInt()}%", r.level, { v -> vm.changeReverb(vm.reverb.copy(level = v)) },
                 c, Target(TargetType.REVERB_LEVEL), default = 0.35f)
         }
         Text("Quanto cada instrumento manda para o reverb é o knob Reverb no painel de cada canal.",
-            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
+            color = InkDim, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
