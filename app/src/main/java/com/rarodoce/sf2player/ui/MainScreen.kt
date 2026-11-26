@@ -212,6 +212,7 @@ private fun TopBar(vm: MainViewModel, tab: Int, onTab: (Int) -> Unit, onMidi: ()
             Spacer(Modifier.width(4.dp))
             Text(vm.connected?.deviceName ?: "Sem teclado", fontSize = 13.sp, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        CpuBadge(vm)
         RecordButton(vm)
         IconButton(onClick = vm::panic) { Icon(Icons.Rounded.StopCircle, "Parar todos os sons", tint = Danger) }
     }
@@ -995,4 +996,20 @@ private fun ExitDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
         },
     )
+}
+
+/** Uso do processador pelo áudio. Perto de 100% o som começa a falhar. */
+@Composable
+private fun CpuBadge(vm: MainViewModel) {
+    val l = vm.cpuLoad
+    val c = when { l >= 80 -> Danger; l >= 50 -> Accent; else -> Ok }
+    Row(
+        Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.12f))
+            .border(1.dp, Line, RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("CPU", color = InkDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(5.dp))
+        Text("$l%", color = c, fontSize = 12.sp, fontFamily = Mono, fontWeight = FontWeight.Bold)
+    }
 }

@@ -37,6 +37,8 @@ object Engine {
     external fun nativeRecRead(out: FloatArray): Int
     /** Descarrega todos os timbres e samples. */
     external fun nativeResetAll()
+    /** Carga do processamento de áudio desde a última leitura (1,0 = 100%). */
+    external fun nativeCpuLoad(): Float
 
     // ---- pads de sample ----
     /** Áudio já decodificado: estéreo intercalado. */

@@ -43,6 +43,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val padHit = mutableStateListOf(*Array(PAD_COUNT) { 0L })
     private val padStateBuf = IntArray(PAD_COUNT)
 
+    /** Uso do processador pelo áudio, em %, atualizado algumas vezes por segundo. */
+    var cpuLoad by mutableStateOf(0); private set
+    private var cpuFrames = 0
+    private var cpuMax = 0f
+
     private val scenesFile = File(app.filesDir, "presets.json")
     private val timbresFile = File(app.filesDir, "timbres.json")
     val scenes = mutableStateListOf<Scene>().apply { addAll(listFromJson(scenesFile.takeIf { it.exists() }?.readText(), Scene::fromJson)) }
@@ -261,6 +266,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (next < 0.001f) next = 0f
             if (next != shown) meters[i] = next
         }
+        // carga do áudio: guarda o pico e mostra a cada ~0,4 s
+        cpuMax = maxOf(cpuMax, Engine.nativeCpuLoad())
+        if (++cpuFrames >= 24) { cpuLoad = (cpuMax * 100).toInt().coerceIn(0, 999); cpuMax = 0f; cpuFrames = 0 }
         Engine.nativePadStates(padStateBuf)
         for (i in 0 until PAD_COUNT) { val on = padStateBuf[i] == 1; if (padPlaying[i] != on) padPlaying[i] = on }
     }

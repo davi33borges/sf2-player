@@ -15,6 +15,7 @@
 #include <cstring>
 #include <algorithm>
 #include <memory>
+#include <chrono>
 
 #define LOG_TAG "SF2Engine"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -252,6 +253,8 @@ public:
     std::vector<float> recBuf = std::vector<float>(1 << 20);
     std::atomic<uint32_t> recW{0}, recR{0};
     std::atomic<bool> recording{false};
+    // carga do áudio: tempo gasto no callback / tempo disponível (1 = 100%: começa a estalar)
+    std::atomic<float> loadPeak{0.f};
     std::atomic<uint32_t> recDropped{0};
     int sampleRate = 48000;
     std::shared_ptr<oboe::AudioStream> stream;
@@ -457,7 +460,18 @@ public:
         if (p > old) peaks[i].store(p, std::memory_order_relaxed);
     }
 
-    oboe::DataCallbackResult onAudioReady(oboe::AudioStream*, void* data, int32_t frames) override {
+    oboe::DataCallbackResult onAudioReady(oboe::AudioStream* st, void* data, int32_t frames) override {
+        const auto t0 = std::chrono::steady_clock::now();
+        struct LoadMeter {
+            Engine* e; std::chrono::steady_clock::time_point t0; double budget;
+            ~LoadMeter() {
+                double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                float l = (float)(used / budget);
+                float old = e->loadPeak.load(std::memory_order_relaxed);
+                if (l > old) e->loadPeak.store(l, std::memory_order_relaxed);
+            }
+        } meter{this, t0, (double)frames / std::max(1, sampleRate)};
+        (void)st;
         float* out = static_cast<float*>(data);
         std::memset(out, 0, sizeof(float) * frames * 2);
         std::unique_lock<std::mutex> g(lock, std::try_to_lock);
@@ -831,6 +845,13 @@ Java_com_rarodoce_sf2player_Engine_nativeResetAll(JNIEnv*, jobject) {
         }
     }
     for (auto* f : old) tsf_close(f);
+}
+
+/** Maior carga do áudio desde a última leitura (0..1+). */
+JNIEXPORT jfloat JNICALL
+Java_com_rarodoce_sf2player_Engine_nativeCpuLoad(JNIEnv*, jobject) {
+    if (!gEngine) return 0.f;
+    return gEngine->loadPeak.exchange(0.f, std::memory_order_relaxed);
 }
 
 /** Lê e zera os picos: 8 canais, master, saída L, saída R. */
