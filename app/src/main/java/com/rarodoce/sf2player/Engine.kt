@@ -54,7 +54,7 @@ object Engine {
     fun apply(index: Int, s: SlotState) = nativeSetSlot(
         index, s.enabled, s.preset, s.transpose, s.lowKey, s.highKey, s.channel,
         floatArrayOf(
-            faderGain(s.volume), s.pan, releaseMul(s.release), s.velocity,
+            faderGain(s.volume) * trimGain(s.gain), s.pan, releaseMul(s.release), s.velocity,
             s.eqLow, s.eqMid, s.eqHigh, cutoffHz(s.cutoff), s.comp, s.reverb, s.output.toFloat(),
             s.velocity, delayMs(s.delayTime), s.delayMix, s.poly.toFloat(),
         ),
@@ -83,3 +83,7 @@ fun delayMs(t: Float): Float = (60.0 * Math.pow(25.0, t.toDouble())).toFloat()
 
 /** Opções de polifonia oferecidas na tela. */
 val POLY_STEPS = listOf(8, 12, 16, 24, 32, 48, 64, 96, 128)
+
+/** Ganho do timbre em dB: 0..0,6 vai de -30 a 0 dB; 0,6..1 vai de 0 a +12 dB. */
+fun trimDb(g: Float): Float = if (g >= 0.6f) (g - 0.6f) / 0.4f * 12f else (g - 0.6f) / 0.6f * 30f
+fun trimGain(g: Float): Float = Math.pow(10.0, trimDb(g) / 20.0).toFloat()

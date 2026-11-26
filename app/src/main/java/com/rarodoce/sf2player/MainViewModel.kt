@@ -172,6 +172,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             TargetType.SLOT_CUTOFF -> if (isOn && s != null) update(t.slot) { it.copy(cutoff = v) }
             TargetType.SLOT_COMP -> if (isOn && s != null) update(t.slot) { it.copy(comp = v) }
             TargetType.SLOT_REVERB -> if (isOn && s != null) update(t.slot) { it.copy(reverb = v) }
+            TargetType.SLOT_GAIN -> if (isOn && s != null) update(t.slot) { it.copy(gain = v) }
             TargetType.SLOT_DELAY_MIX -> if (isOn && s != null) update(t.slot) { it.copy(delayMix = v) }
             TargetType.SLOT_DELAY_TIME -> if (isOn && s != null) update(t.slot) { it.copy(delayTime = v) }
             TargetType.MASTER_VOLUME -> if (isOn) setMasterVolume(v)

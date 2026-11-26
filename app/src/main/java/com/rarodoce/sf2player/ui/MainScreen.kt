@@ -98,6 +98,7 @@ import com.rarodoce.sf2player.faderDb
 import com.rarodoce.sf2player.noteName
 import com.rarodoce.sf2player.releaseMul
 import com.rarodoce.sf2player.delayMs
+import com.rarodoce.sf2player.trimDb
 import com.rarodoce.sf2player.POLY_STEPS
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -497,6 +498,10 @@ private fun SoundColumn(vm: MainViewModel, i: Int, s: SlotState, color: Color, m
         Text("Arraste os botões para cima ou para baixo. Toque duplo volta ao padrão.", color = InkDim, fontSize = 10.sp,
             modifier = Modifier.padding(top = 2.dp, bottom = 4.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            // ganho do timbre: equilibra SF2 muito altos ou baixos sem mexer no fader da mesa
+            KnobCell(vm, "Ganho", dbLabel(trimDb(s.gain)), s.gain,
+                { v -> upd { it.copy(gain = if (kotlin.math.abs(v - 0.6f) < 0.015f) 0.6f else v) } },
+                color, Target(TargetType.SLOT_GAIN, i), default = 0.6f)
             KnobCell(vm, "Release", "%.2f×".format(releaseMul(s.release)), (s.release + 1) / 2,
                 { v -> upd { it.copy(release = v * 2 - 1) } }, color, Target(TargetType.SLOT_RELEASE, i), bipolar = true)
             KnobCell(vm, "Velocity", velocityLabel(s.velocity), s.velocity,

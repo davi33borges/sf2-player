@@ -29,6 +29,7 @@ data class SlotState(
     val delayTime: Float = 0.6f,       // 0..1 (≈ 400 ms)
     val delayMix: Float = 0f,          // intensidade 0..1 (0 = desligado)
     val poly: Int = 32,                // polifonia (vozes)
+    val gain: Float = 0.6f,            // ganho do timbre: 0,6 = 0 dB (0 = -30 dB, 1 = +12 dB)
     val loading: Boolean = false,
     val error: String? = null,
 ) {
@@ -43,11 +44,11 @@ data class SlotState(
         put("release", release.toDouble()); put("velCurve", velocity.toDouble()); put("eqLow", eqLow.toDouble())
         put("eqMid", eqMid.toDouble()); put("eqHigh", eqHigh.toDouble()); put("cutoff", cutoff.toDouble()); put("comp", comp.toDouble())
         put("reverb", reverb.toDouble()); put("output", output)
-        put("delayTime", delayTime.toDouble()); put("delayMix", delayMix.toDouble()); put("poly", poly)
+        put("delayTime", delayTime.toDouble()); put("delayMix", delayMix.toDouble()); put("poly", poly); put("gain", gain.toDouble())
     }
 
     /** Volta o timbre ao som original do SF2 (mantém arquivo, preset e teclado). */
-    fun resetSound() = copy(release = 0f, velocity = 0.5f, delayMix = 0f, delayTime = 0.6f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f, reverb = 0.2f)
+    fun resetSound() = copy(gain = 0.6f, release = 0f, velocity = 0.5f, delayMix = 0f, delayTime = 0.6f, eqLow = 0f, eqMid = 0f, eqHigh = 0f, cutoff = 1f, comp = 0f, reverb = 0.2f)
 
     companion object {
         fun fromJson(o: JSONObject) = SlotState(
@@ -73,6 +74,7 @@ data class SlotState(
             delayTime = o.optDouble("delayTime", 0.6).toFloat(),
             delayMix = o.optDouble("delayMix", 0.0).toFloat(),
             poly = o.optInt("poly", 32),
+            gain = o.optDouble("gain", 0.6).toFloat(),
         )
     }
 }
@@ -89,6 +91,7 @@ enum class TargetType(val label: String, val continuous: Boolean) {
     SLOT_CUTOFF("Cutoff", true),
     SLOT_COMP("Compressor", true),
     SLOT_REVERB("Reverb", true),
+    SLOT_GAIN("Ganho", true),
     SLOT_DELAY_MIX("Delay (intensidade)", true),
     SLOT_DELAY_TIME("Delay (tempo)", true),
     SLOT_TOGGLE("Liga/desliga (mute)", false),
